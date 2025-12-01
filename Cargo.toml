@@ -1,8 +1,21 @@
 [package]
 name = "kodegen_native_notify"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
-description = "Cross-platform native system notifications"
+description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
+license = "Apache-2.0 OR MIT"
+authors = ["KODEGEN.ᴀɪ"]
+homepage = "https://kodegen.ai"
+repository = "https://github.com/cyrup-ai/kodegen-mcp-tool"
+readme = "README.md"
+categories = ["development-tools", "command-line-utilities", "api-bindings"]
+keywords = [
+    "mcp",
+    "terminal",
+    "agent",
+    "filesystem",
+    "claude"
+]
 
 [dependencies]
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
@@ -40,3 +53,7 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+[lib]
+path = "src/lib.rs"
+name = "kodegen_native_notify"
