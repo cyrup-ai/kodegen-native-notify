@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::time_wrapper::DefaultableInstant;
@@ -13,7 +12,7 @@ use super::{CorrelationId, NotificationError, NotificationResult, Platform};
 
 /// Comprehensive notification lifecycle management component
 /// Incorporates enterprise patterns for state tracking, retry logic, and observability
-#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationLifecycle {
     /// Current notification state
     pub state: NotificationState,
@@ -54,9 +53,9 @@ impl NotificationLifecycle {
         }
     }
 
-    /// Update timing information with current elapsed time
-    pub fn update_timing(&mut self, elapsed: Duration) {
-        self.timing.update(elapsed);
+    /// Update timing information with current time
+    pub fn update_timing(&mut self) {
+        self.timing.update(Duration::ZERO);
     }
 
     /// Schedule a retry with the specified delay

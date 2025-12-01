@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use time_wrapper::DefaultableInstant;
 use uuid::Uuid;
@@ -51,12 +50,12 @@ pub use platform::{
 };
 pub use tracing::{
     CorrelationData, PerformanceMarker, PerformanceMarkerType, SamplingConfig, TraceBreadcrumb,
-    TraceContext, TracingContext, notification_tracing_system,
+    TraceContext, TracingContext,
 };
 
 /// Unique notification identity with enterprise-grade tracing
 /// Incorporates Slack's distributed tracing patterns and Discord's entity architecture
-#[derive(Component, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NotificationIdentity {
     /// Globally unique notification identifier
@@ -315,10 +314,12 @@ impl TraceId {
 
 /// Priority levels for attention management (Slack's approach)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Priority {
     /// Background notifications (system updates, non-urgent info)
     Low = 1,
     /// Normal notifications (messages, general alerts)  
+    #[default]
     Normal = 2,
     /// Important notifications (mentions, direct messages)
     High = 3,
@@ -328,11 +329,6 @@ pub enum Priority {
     Urgent = 5,
 }
 
-impl Default for Priority {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
 
 impl Priority {
     /// Check if this priority level should bypass Do Not Disturb settings

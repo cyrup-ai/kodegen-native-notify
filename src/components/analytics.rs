@@ -5,7 +5,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::time_wrapper::DefaultableInstant;
@@ -14,7 +13,7 @@ use super::{CorrelationId, NotificationId, Platform, SpanId, TraceId};
 /// Comprehensive notification analytics component for enterprise observability
 /// Incorporates patterns from Slack's performance monitoring, Discord's user engagement tracking,
 /// Teams' client data layer analytics, and production notification effectiveness measurement
-#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationAnalytics {
     /// Performance metrics for delivery and interaction
     pub performance_metrics: PerformanceMetrics,

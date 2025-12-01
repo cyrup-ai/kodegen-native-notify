@@ -5,7 +5,7 @@ edition = "2024"
 description = "Cross-platform native system notifications"
 
 [dependencies]
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 parking_lot = "0.12"
@@ -15,8 +15,8 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
-ammonia = "4.0"  # HTML sanitization with whitelist approach
-pulldown-cmark = "0.12"  # CommonMark parser for safe Markdown processing
+ammonia = "4.1"  # HTML sanitization with whitelist approach
+pulldown-cmark = "0.13"  # CommonMark parser for safe Markdown processing
 
 # macOS specific
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -27,7 +27,7 @@ block2 = "0.6"
 
 # Linux specific
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5.10", default-features = false, features = ["tokio"] }
+zbus = { version = "5.12", default-features = false, features = ["tokio"] }
 
 # Windows specific
 [target.'cfg(target_os = "windows")'.dependencies]

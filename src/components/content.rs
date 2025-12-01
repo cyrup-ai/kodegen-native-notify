@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -14,7 +13,7 @@ use super::{NotificationCategory, NotificationError, NotificationResult, Priorit
 /// Comprehensive notification content supporting rich media and complex interactions
 /// Incorporates patterns from Slack's rich messaging, Discord's media handling,
 /// and native platform capabilities (macOS attachments, Windows adaptive UI, Linux hints)
-#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationContent {
     /// Primary notification title (required)
     pub title: String,

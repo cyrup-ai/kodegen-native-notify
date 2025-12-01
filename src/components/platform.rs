@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -15,7 +14,7 @@ use super::NotificationResult;
 /// Comprehensive platform integration component supporting dynamic capability negotiation
 /// Incorporates patterns from Linux D-Bus capability detection, Windows adaptive UI,
 /// macOS authorization flows, and web standards compatibility
-#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformIntegration {
     /// Target platforms for notification delivery
     pub target_platforms: Vec<Platform>,
@@ -837,7 +836,6 @@ pub struct GlobalPreferences {
 }
 
 /// Platform manager resource for capability negotiation and management
-#[derive(Resource)]
 pub struct PlatformManager {
     /// Platform backends
     backends: HashMap<Platform, Box<dyn PlatformBackend>>,
@@ -1122,7 +1120,7 @@ impl AuthorizationManager for DefaultAuthorizationManager {
 }
 
 /// Notification request for platform delivery
-#[derive(Debug, Clone, bevy::prelude::Event)]
+#[derive(Debug, Clone)]
 pub struct NotificationRequest {
     pub notification_id: String,
     pub content: NotificationContent,

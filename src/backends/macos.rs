@@ -51,10 +51,9 @@ impl MacOSBackend {
             let (tx, rx) = oneshot::channel();
             let tx = Arc::new(Mutex::new(Some(tx)));
 
-            // Use Bevy's AsyncComputeTaskPool for consistency with ECS patterns
-            let task_pool = bevy::tasks::AsyncComputeTaskPool::get();
-            let _task_handle = task_pool.spawn(async move {
-                // objc2 operations are sync but wrapped in async for Bevy integration
+            // Use tokio for async operations
+            let _task_handle = tokio::spawn(async move {
+                // objc2 operations are sync but wrapped in async
                 let center = UNUserNotificationCenter::currentNotificationCenter();
 
                 // Create a completion handler block that captures authorization status
@@ -202,14 +201,12 @@ impl PlatformBackend for MacOSBackend {
                 let (completion_tx, completion_rx) = oneshot::channel();
                 let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
 
-                // Set up the notification using Bevy's AsyncComputeTaskPool
-                let task_pool = bevy::tasks::AsyncComputeTaskPool::get();
-                let result = task_pool
-                    .spawn(async move {
+                // Set up the notification using tokio
+                let result = tokio::spawn(async move {
                         let center =
                             UNUserNotificationCenter::currentNotificationCenter();
 
-                        // Create notification content using Bevy async task pool
+                        // Create notification content
                         let content = UNMutableNotificationContent::new();
                         let title_ns = NSString::from_str(&request_title);
                         let body_ns = NSString::from_str(&request_body);
@@ -261,12 +258,13 @@ impl PlatformBackend for MacOSBackend {
                         // Return the notification ID for success case
                         Ok::<String, String>(notification_id.clone())
                     })
-                    .await;
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e));
 
-                // Handle the AsyncComputeTaskPool result
+                // Handle the tokio task result
                 let notification_id = match result {
-                    Ok(id) => id,
-                    Err(e) => {
+                    Ok(Ok(id)) => id,
+                    Ok(Err(e)) | Err(e) => {
                         return Err(crate::components::NotificationError::PlatformError {
                             platform: "macOS".to_string(),
                             error_code: None,
@@ -312,7 +310,7 @@ impl PlatformBackend for MacOSBackend {
                     metadata.insert("authorization_status".to_string(), "granted".to_string());
                     metadata.insert(
                         "delivery_method".to_string(),
-                        "bevy_async_task_pool".to_string(),
+                        "tokio_async_task".to_string(),
                     );
 
                     Ok(DeliveryReceipt {
@@ -353,16 +351,12 @@ impl PlatformBackend for MacOSBackend {
         Box::pin(async move {
             #[cfg(target_os = "macos")]
             {
-                // Move all objc2 work inside Bevy async task pool
+                // Move all objc2 work inside tokio async task
                 let update_id = id.to_string();
                 let content_changes = update.content_changes.clone();
 
-                let task_pool = bevy::tasks::AsyncComputeTaskPool::get();
-                
-
-                // AsyncComputeTaskPool returns the result directly
-                task_pool
-                    .spawn(async move {
+                // tokio returns the result directly
+                tokio::spawn(async move {
                         let center =
                             UNUserNotificationCenter::currentNotificationCenter();
 
@@ -421,6 +415,11 @@ impl PlatformBackend for MacOSBackend {
                         Ok::<(), crate::components::NotificationError>(())
                     })
                     .await
+                    .map_err(|e| crate::components::NotificationError::PlatformError {
+                        platform: "macOS".to_string(),
+                        error_code: None,
+                        message: format!("Task join error: {}", e),
+                    })?
             }
 
             #[cfg(not(target_os = "macos"))]

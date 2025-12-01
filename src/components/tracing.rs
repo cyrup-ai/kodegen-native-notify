@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::time_wrapper::DefaultableInstant;
@@ -12,7 +11,7 @@ use super::{CorrelationId, NotificationId, SpanId, TraceId, TraceSpan};
 
 /// Tracing context component for notification entities
 /// Provides distributed tracing capabilities across service boundaries
-#[derive(Component, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracingContext {
     /// Active trace span for this notification
     pub active_span: Option<TraceSpan>,
@@ -299,22 +298,6 @@ impl SamplingConfig {
     pub fn with_sample_rate(mut self, rate: f64) -> Self {
         self.sample_rate = rate.clamp(0.0, 1.0);
         self
-    }
-}
-
-/// Tracing system for managing notification observability
-pub fn notification_tracing_system(mut query: Query<&mut TracingContext>) {
-    for mut tracing_context in query.iter_mut() {
-        // Clean up old breadcrumbs
-        let cutoff_time = DefaultableInstant::now() - std::time::Duration::from_secs(3600); // 1 hour
-        tracing_context
-            .breadcrumbs
-            .retain(|b| b.timestamp > cutoff_time);
-
-        // Clean up old performance markers
-        tracing_context
-            .performance_markers
-            .retain(|m| m.timestamp > cutoff_time);
     }
 }
 

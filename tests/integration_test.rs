@@ -1,5 +1,4 @@
-use bevy::prelude::*;
-use ecs_notifications::*;
+use kodegen_native_notify::*;
 
 #[test]
 fn test_enterprise_notification_system_integration() {
