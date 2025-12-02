@@ -33,6 +33,8 @@ pub use content::{
     QuickReply, RichText, SelectionOption, SystemSound, ValidationState, VideoData, VideoFormat,
     VideoSource,
 };
+// Re-export url::Url for convenience so consumers don't need to add url crate directly
+pub use url::Url;
 pub use lifecycle::{
     BackoffStrategy, CircuitBreakerState, DeliveryAttemptResult, DeliveryProgress,
     ErrorDetails as LifecycleErrorDetails, ErrorType as LifecycleErrorType, ExpirationPolicy,
@@ -42,11 +44,11 @@ pub use lifecycle::{
 };
 pub use platform::{
     ActionChange, ActionFallback, AuthorizationManager, AuthorizationState, CompatibilityLevel,
-    DegradationStrategy, DeliveryOptions, DeliveryReceipt as PlatformDeliveryReceipt,
-    FeatureDegradation, FeatureMatrix, GlobalPreferences, MarkupFallback, MediaChange,
-    MediaFallback, NativeHandleMetadata, NotificationRequest, NotificationUpdate, PermissionLevel,
-    Platform, PlatformBackend, PlatformCapabilities, PlatformConfig, PlatformIntegration,
-    PlatformManager, PlatformPreferences, PlatformUserSettings, RateLimit,
+    DegradationStrategy, DeliveryOptions, FeatureDegradation, FeatureMatrix, GlobalPreferences,
+    MarkupFallback, MediaChange, MediaFallback, NativeHandleMetadata, NotificationRequest,
+    NotificationUpdate, PermissionLevel, Platform, PlatformBackend, PlatformCapabilities,
+    PlatformConfig, PlatformIntegration, PlatformManager, PlatformPreferences,
+    PlatformUserSettings, RateLimit,
 };
 pub use tracing::{
     CorrelationData, PerformanceMarker, PerformanceMarkerType, SamplingConfig, TraceBreadcrumb,
@@ -345,6 +347,47 @@ impl Priority {
             Priority::Critical => None, // No timeout - requires user action
             Priority::Urgent => None,   // No timeout - requires user action
         }
+    }
+}
+
+/// Unified delivery receipt for successful notification delivery
+/// Combines platform delivery confirmation with internal tracking data
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeliveryReceipt {
+    /// Platform that received the notification
+    pub platform: Platform,
+    /// Platform-assigned notification ID
+    pub native_id: String,
+    /// When delivery completed (wall clock time for logging/auditing)
+    pub delivered_at: std::time::SystemTime,
+    /// How long delivery took (for performance metrics)
+    pub delivery_latency: Duration,
+    /// Unique receipt identifier for tracking
+    pub receipt_id: String,
+    /// Platform-specific metadata
+    pub metadata: HashMap<String, String>,
+}
+
+impl DeliveryReceipt {
+    pub fn new(platform: Platform, native_id: String) -> Self {
+        Self {
+            platform,
+            native_id,
+            delivered_at: std::time::SystemTime::now(),
+            delivery_latency: Duration::ZERO,
+            receipt_id: Uuid::new_v4().to_string(),
+            metadata: HashMap::new(),
+        }
+    }
+
+    pub fn with_latency(mut self, latency: Duration) -> Self {
+        self.delivery_latency = latency;
+        self
+    }
+
+    pub fn with_metadata(mut self, key: String, value: String) -> Self {
+        self.metadata.insert(key, value);
+        self
     }
 }
 

@@ -1,6 +1,6 @@
 //! Tests for components/mod.rs
 
-use ecs_notifications::components::{
+use kodegen_native_notify::{
     NotificationId,
     CorrelationId,
     Priority,

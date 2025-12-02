@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_native_notify"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 license = "Apache-2.0 OR MIT"
@@ -18,7 +18,7 @@ keywords = [
 ]
 
 [dependencies]
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "fs"] }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 parking_lot = "0.12"
@@ -30,6 +30,9 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 ammonia = "4.1"  # HTML sanitization with whitelist approach
 pulldown-cmark = "0.13"  # CommonMark parser for safe Markdown processing
+dashmap = "6"  # Lock-free concurrent HashMap for reducing worker contention
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }  # HTTP client for remote image downloads
+tempfile = "3"  # Temporary file management for downloaded images
 
 # macOS specific
 [target.'cfg(target_os = "macos")'.dependencies]

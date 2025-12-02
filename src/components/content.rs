@@ -26,7 +26,7 @@ pub struct NotificationContent {
     /// Interactive elements (buttons, inputs, menus)
     pub interactions: InteractionSet,
     /// Notification category for templating and grouping
-    pub category: NotificationCategory,
+    pub category: Option<NotificationCategory>,
     /// Priority level for attention management
     pub priority: Priority,
     /// Custom data for application-specific handling
@@ -47,7 +47,7 @@ impl NotificationContent {
             body: body.into(),
             media: Vec::new(),
             interactions: InteractionSet::default(),
-            category: NotificationCategory::new("default", "Default"),
+            category: None,
             priority: Priority::default(),
             custom_data: HashMap::new(),
             localization: None,
@@ -68,7 +68,7 @@ impl NotificationContent {
     }
 
     pub fn with_category(mut self, category: NotificationCategory) -> Self {
-        self.category = category;
+        self.category = Some(category);
         self
     }
 
@@ -261,6 +261,65 @@ impl RichText {
             RichText::Markdown(md) => md.len(),
             RichText::Html(html) => html.len(),
             RichText::PlatformSpecific(map) => map.values().map(|s| s.len()).sum(),
+        }
+    }
+
+    /// Convert to Pango markup for Linux D-Bus notifications
+    /// Supports: <b>, <i>, <u>, <s>, <tt>, <a href="...">
+    pub fn to_pango_markup(&self) -> String {
+        match self {
+            RichText::Plain(text) => pango_escape(text),
+            RichText::Markdown(md) => convert_markdown_to_pango(md),
+            RichText::Html(html) => convert_html_to_pango(html),
+            RichText::PlatformSpecific(map) => {
+                map.get("pango")
+                    .or_else(|| map.get("plain"))
+                    .map(|s| pango_escape(s))
+                    .unwrap_or_default()
+            }
+        }
+    }
+
+    /// Convert to structured plain text that preserves semantic meaning
+    /// Used for platforms without markup support (macOS body, Windows body)
+    /// Preserves: line breaks, code blocks (indented), lists, link URLs
+    pub fn to_structured_plain_text(&self) -> String {
+        match self {
+            RichText::Plain(text) => text.clone(),
+            RichText::Markdown(md) => convert_markdown_to_structured_plain(md),
+            RichText::Html(html) => convert_html_to_structured_plain(html),
+            RichText::PlatformSpecific(map) => {
+                map.get("plain")
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        }
+    }
+
+    /// Extract a short summary suitable for subtitle/secondary text
+    /// Returns first sentence or line, max ~100 chars
+    pub fn extract_subtitle(&self) -> Option<String> {
+        let plain = self.to_plain_text();
+        let first_line = plain.lines().next()?;
+        
+        // Find first sentence end or take whole line
+        let summary = if let Some(pos) = first_line.find(['.', '!', '?']) {
+            &first_line[..=pos]
+        } else {
+            first_line
+        };
+        
+        // Truncate if too long
+        let truncated = if summary.len() > 100 {
+            format!("{}...", &summary[..97])
+        } else {
+            summary.to_string()
+        };
+        
+        if truncated.is_empty() {
+            None
+        } else {
+            Some(truncated)
         }
     }
 }
@@ -1087,15 +1146,52 @@ fn convert_markdown_to_html(markdown: &str) -> String {
 }
 
 fn convert_html_to_plain(html: &str) -> String {
-    // Basic HTML to plain text conversion
-    // In production, use a proper HTML parser
-    html.replace("<br>", "\n")
-        .replace("<p>", "")
-        .replace("</p>", "\n")
-        .replace("<strong>", "")
-        .replace("</strong>", "")
-        .replace("<em>", "")
-        .replace("</em>", "")
+    // Decode HTML entities first
+    let decoded = decode_html_entities(html);
+    
+    // Handle block-level elements: convert to newlines for structure preservation
+    // Case-insensitive regex handles attributes, self-closing variants (e.g., <br/>, <BR>)
+    let step1 = match regex::Regex::new(r"(?i)</?(?:p|div|br\s*/?\s*|h[1-6]|li|ul|ol|table|tr|td|th|blockquote|pre)[^>]*>") {
+        Ok(re) => re.replace_all(&decoded, "\n").to_string(),
+        Err(_) => decoded.clone(), // Fallback: return decoded string if regex compilation fails
+    };
+    
+    // Remove all remaining HTML tags (inline elements like strong, em, a, span, etc.)
+    let step2 = match regex::Regex::new(r"<[^>]+>") {
+        Ok(re) => re.replace_all(&step1, "").to_string(),
+        Err(_) => step1, // Fallback: return as-is if regex compilation fails
+    };
+    
+    // Normalize whitespace: trim lines, remove empty lines, collapse multiple newlines
+    step2.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn decode_html_entities(html: &str) -> String {
+    let mut result = html.to_string();
+    
+    // Common named entities (ordered by frequency and importance)
+    // Must decode &amp; last to avoid double-decoding
+    result = result.replace("&lt;", "<");
+    result = result.replace("&gt;", ">");
+    result = result.replace("&quot;", "\"");
+    result = result.replace("&#39;", "'");
+    result = result.replace("&#x27;", "'");
+    result = result.replace("&apos;", "'");
+    result = result.replace("&nbsp;", " ");
+    result = result.replace("&ndash;", "–");
+    result = result.replace("&mdash;", "—");
+    result = result.replace("&hellip;", "…");
+    result = result.replace("&copy;", "©");
+    result = result.replace("&reg;", "®");
+    result = result.replace("&trade;", "™");
+    // Decode &amp; last to prevent double-decoding (e.g., &amp;lt; -> &lt; -> <)
+    result = result.replace("&amp;", "&");
+    
+    result
 }
 
 fn html_escape(text: &str) -> String {
@@ -1104,4 +1200,261 @@ fn html_escape(text: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
+}
+
+/// Escape text for Pango markup (XML-like escaping)
+fn pango_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Convert HTML to Pango markup format
+fn convert_html_to_pango(html: &str) -> String {
+    let decoded = decode_html_entities(html);
+    let mut result = decoded;
+
+    // Bold: <strong>, <b> -> <b>
+    if let Ok(re) = regex::Regex::new(r"(?i)<strong[^>]*>") {
+        result = re.replace_all(&result, "<b>").to_string();
+    }
+    result = result.replace("</strong>", "</b>").replace("</STRONG>", "</b>");
+
+    // Italic: <em>, <i> -> <i>
+    if let Ok(re) = regex::Regex::new(r"(?i)<em[^>]*>") {
+        result = re.replace_all(&result, "<i>").to_string();
+    }
+    result = result.replace("</em>", "</i>").replace("</EM>", "</i>");
+
+    // Code: <code>, <pre> -> <tt>
+    if let Ok(re) = regex::Regex::new(r"(?i)<code[^>]*>") {
+        result = re.replace_all(&result, "<tt>").to_string();
+    }
+    result = result.replace("</code>", "</tt>").replace("</CODE>", "</tt>");
+    if let Ok(re) = regex::Regex::new(r"(?i)<pre[^>]*>") {
+        result = re.replace_all(&result, "<tt>").to_string();
+    }
+    result = result.replace("</pre>", "</tt>").replace("</PRE>", "</tt>");
+
+    // Underline: <u> stays as <u>
+    // Strikethrough: <s>, <del>, <strike> -> <s>
+    if let Ok(re) = regex::Regex::new(r"(?i)<(del|strike)[^>]*>") {
+        result = re.replace_all(&result, "<s>").to_string();
+    }
+    if let Ok(re) = regex::Regex::new(r"(?i)</(del|strike)>") {
+        result = re.replace_all(&result, "</s>").to_string();
+    }
+
+    // Links: preserve <a href="..."> but strip other attributes
+    if let Ok(re) = regex::Regex::new(r#"(?i)<a\s+[^>]*href="([^"]+)"[^>]*>"#) {
+        result = re.replace_all(&result, r#"<a href="$1">"#).to_string();
+    }
+
+    // Convert block elements to newlines
+    if let Ok(re) = regex::Regex::new(r"(?i)</?(div|p|li|tr)[^>]*>") {
+        result = re.replace_all(&result, "\n").to_string();
+    }
+    if let Ok(re) = regex::Regex::new(r"(?i)<br\s*/?\s*>") {
+        result = re.replace_all(&result, "\n").to_string();
+    }
+
+    // Strip remaining unsupported tags (img, span, table, etc.)
+    // Keep: b, i, u, s, tt, a
+    if let Ok(re) = regex::Regex::new(r"</?([a-zA-Z][a-zA-Z0-9]*)[^>]*>") {
+        let allowed_tags = ["b", "i", "u", "s", "tt", "a"];
+        result = re.replace_all(&result, |caps: &regex::Captures| {
+            let tag_name = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
+            if allowed_tags.contains(&tag_name.as_str()) {
+                caps.get(0).map_or("", |m| m.as_str()).to_string()
+            } else {
+                String::new()
+            }
+        }).to_string();
+    }
+
+    // Clean up whitespace
+    if let Ok(re) = regex::Regex::new(r"\n{3,}") {
+        result = re.replace_all(&result, "\n\n").to_string();
+    }
+
+    result.trim().to_string()
+}
+
+/// Convert Markdown to Pango markup
+fn convert_markdown_to_pango(markdown: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+
+    let parser = Parser::new_ext(markdown, options);
+    let mut pango = String::new();
+    let mut tag_stack: Vec<&str> = Vec::new();
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Strong => {
+                    pango.push_str("<b>");
+                    tag_stack.push("b");
+                }
+                Tag::Emphasis => {
+                    pango.push_str("<i>");
+                    tag_stack.push("i");
+                }
+                Tag::Strikethrough => {
+                    pango.push_str("<s>");
+                    tag_stack.push("s");
+                }
+                Tag::CodeBlock(_) => {
+                    pango.push_str("<tt>");
+                    tag_stack.push("tt");
+                }
+                Tag::Link { dest_url, .. } => {
+                    pango.push_str(&format!(r#"<a href="{}">"#, pango_escape(&dest_url)));
+                    tag_stack.push("a");
+                }
+                Tag::Paragraph => {}
+                _ => {}
+            },
+            Event::End(tag_end) => match tag_end {
+                TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough
+                | TagEnd::CodeBlock | TagEnd::Link => {
+                    if let Some(t) = tag_stack.pop() {
+                        pango.push_str(&format!("</{}>", t));
+                    }
+                }
+                TagEnd::Paragraph => pango.push_str("\n\n"),
+                _ => {}
+            },
+            Event::Text(text) => pango.push_str(&pango_escape(&text)),
+            Event::Code(code) => pango.push_str(&format!("<tt>{}</tt>", pango_escape(&code))),
+            Event::SoftBreak => pango.push(' '),
+            Event::HardBreak => pango.push('\n'),
+            _ => {}
+        }
+    }
+
+    pango.trim().to_string()
+}
+
+/// Convert HTML to structured plain text preserving semantic structure
+fn convert_html_to_structured_plain(html: &str) -> String {
+    let decoded = decode_html_entities(html);
+    let mut result = decoded;
+
+    // Convert <pre>/<code> blocks to indented text
+    if let Ok(re) = regex::Regex::new(r"(?is)<pre[^>]*>(.*?)</pre>") {
+        result = re.replace_all(&result, |caps: &regex::Captures| {
+            let code = caps.get(1).map_or("", |m| m.as_str());
+            let code_plain = regex::Regex::new(r"<[^>]+>")
+                .map(|re| re.replace_all(code, "").to_string())
+                .unwrap_or_else(|_| code.to_string());
+            // Indent each line with 2 spaces
+            let indented: String = code_plain
+                .lines()
+                .map(|line| format!("  {}", line))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("\n{}\n", indented)
+        }).to_string();
+    }
+
+    // Convert links to "text (url)" format
+    if let Ok(re) = regex::Regex::new(r#"(?i)<a\s+[^>]*href="([^"]+)"[^>]*>([^<]*)</a>"#) {
+        result = re.replace_all(&result, "$2 ($1)").to_string();
+    }
+
+    // Convert lists to bullet points
+    if let Ok(re) = regex::Regex::new(r"(?i)<li[^>]*>") {
+        result = re.replace_all(&result, "\n• ").to_string();
+    }
+
+    // Block elements to newlines
+    if let Ok(re) = regex::Regex::new(r"(?i)</?(div|p|tr|ul|ol)[^>]*>") {
+        result = re.replace_all(&result, "\n").to_string();
+    }
+    if let Ok(re) = regex::Regex::new(r"(?i)<br\s*/?\s*>") {
+        result = re.replace_all(&result, "\n").to_string();
+    }
+
+    // Strip all remaining HTML tags
+    if let Ok(re) = regex::Regex::new(r"<[^>]+>") {
+        result = re.replace_all(&result, "").to_string();
+    }
+
+    // Clean up whitespace
+    if let Ok(re) = regex::Regex::new(r"\n{3,}") {
+        result = re.replace_all(&result, "\n\n").to_string();
+    }
+
+    result.trim().to_string()
+}
+
+/// Convert Markdown to structured plain text
+fn convert_markdown_to_structured_plain(markdown: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+
+    let parser = Parser::new_ext(markdown, options);
+    let mut output = String::new();
+    let mut in_code_block = false;
+    let mut list_depth: usize = 0;
+
+    for event in parser {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::CodeBlock(_) => {
+                    in_code_block = true;
+                    output.push('\n');
+                }
+                Tag::List(_) => list_depth += 1,
+                Tag::Item => {
+                    output.push('\n');
+                    output.push_str(&"  ".repeat(list_depth.saturating_sub(1)));
+                    output.push_str("• ");
+                }
+                Tag::Link { .. } => {
+                    // Will capture text and append URL after
+                }
+                _ => {}
+            },
+            Event::End(tag_end) => match tag_end {
+                TagEnd::CodeBlock => {
+                    in_code_block = false;
+                    output.push('\n');
+                }
+                TagEnd::List(_) => list_depth = list_depth.saturating_sub(1),
+                TagEnd::Paragraph => output.push_str("\n\n"),
+                TagEnd::Link => {
+                    // Link URL already captured via Text events
+                }
+                _ => {}
+            },
+            Event::Text(text) => {
+                if in_code_block {
+                    // Indent code lines
+                    for line in text.lines() {
+                        output.push_str("  ");
+                        output.push_str(line);
+                        output.push('\n');
+                    }
+                } else {
+                    output.push_str(&text);
+                }
+            }
+            Event::Code(code) => {
+                output.push('`');
+                output.push_str(&code);
+                output.push('`');
+            }
+            Event::SoftBreak => output.push(' '),
+            Event::HardBreak => output.push('\n'),
+            _ => {}
+        }
+    }
+
+    output.trim().to_string()
 }

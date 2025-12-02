@@ -4,12 +4,27 @@
 use std::collections::HashMap;
 
 #[cfg(target_os = "linux")]
+use std::sync::Arc;
+
+#[cfg(target_os = "linux")]
+use std::time::SystemTime;
+
+#[cfg(target_os = "linux")]
+use tokio::sync::OnceCell;
+
+#[cfg(target_os = "linux")]
 use zbus::{Connection, Result as ZbusResult, dbus_proxy};
 
 use crate::components::NotificationResult;
 use crate::components::platform::{
     DeliveryReceipt, NotificationRequest, NotificationUpdate, PlatformBackend, PlatformCapabilities,
 };
+
+#[cfg(target_os = "linux")]
+use crate::components::platform::{PermissionLevel, CompatibilityLevel};
+
+#[cfg(target_os = "linux")]
+use crate::components::Platform;
 
 #[cfg(target_os = "linux")]
 #[dbus_proxy(
@@ -43,9 +58,9 @@ trait Notifications {
 
 pub struct LinuxBackend {
     #[cfg(target_os = "linux")]
-    connection: Arc<Mutex<Option<Connection>>>,
+    connection: Arc<OnceCell<Connection>>,
     #[cfg(target_os = "linux")]
-    capabilities: Arc<Mutex<Option<Vec<String>>>>,
+    capabilities: Arc<OnceCell<Vec<String>>>,
 }
 
 impl Default for LinuxBackend {
@@ -58,9 +73,9 @@ impl LinuxBackend {
     pub fn new() -> Self {
         Self {
             #[cfg(target_os = "linux")]
-            connection: Arc::new(Mutex::new(None)),
+            connection: Arc::new(OnceCell::new()),
             #[cfg(target_os = "linux")]
-            capabilities: Arc::new(Mutex::new(None)),
+            capabilities: Arc::new(OnceCell::new()),
         }
     }
 
@@ -81,70 +96,42 @@ impl LinuxBackend {
 
     #[cfg(target_os = "linux")]
     async fn get_connection(&self) -> Result<Connection, crate::components::NotificationError> {
-        let mut conn_guard = self.connection.lock().map_err(|_| {
-            crate::components::NotificationError::PlatformError {
-                platform: "Linux".to_string(),
-                error_code: None,
-                message: "Failed to acquire connection lock".to_string(),
-            }
-        })?;
-
-        if conn_guard.is_none() {
-            let connection = Connection::session().await.map_err(|e| {
-                crate::components::NotificationError::PlatformError {
-                    platform: "Linux".to_string(),
-                    error_code: None,
-                    message: format!("Failed to connect to D-Bus session: {:?}", e),
-                }
-            })?;
-            *conn_guard = Some(connection.clone());
-            Ok(connection)
-        } else {
-            // Safe to unwrap here as we know it's Some from the preceding check,
-            // but use unwrap_or_else with clear message for better debugging
-            Ok(conn_guard
-                .as_ref()
-                .unwrap_or_else(|| panic!("Critical error: connection should exist after preceding None check - this indicates a race condition or programming error"))
-                .clone())
-        }
+        self.connection
+            .get_or_try_init(|| async {
+                Connection::session().await.map_err(|e| {
+                    crate::components::NotificationError::PlatformError {
+                        platform: "Linux".to_string(),
+                        error_code: None,
+                        message: format!("Failed to connect to D-Bus session: {:?}", e),
+                    }
+                })
+            })
+            .await
+            .cloned()
     }
 
     #[cfg(target_os = "linux")]
     async fn get_capabilities(&self) -> Result<Vec<String>, crate::components::NotificationError> {
-        let mut caps_guard = self.capabilities.lock().map_err(|_| {
-            crate::components::NotificationError::PlatformError {
-                platform: "Linux".to_string(),
-                error_code: None,
-                message: "Failed to acquire capabilities lock".to_string(),
-            }
-        })?;
-
-        if caps_guard.is_none() {
-            let connection = self.get_connection().await?;
-            let proxy = NotificationsProxy::new(&connection).await.map_err(|e| {
-                crate::components::NotificationError::PlatformError {
-                    platform: "Linux".to_string(),
-                    error_code: None,
-                    message: format!("Failed to create D-Bus proxy: {:?}", e),
-                }
-            })?;
-            let caps = proxy.get_capabilities().await.map_err(|e| {
-                crate::components::NotificationError::PlatformError {
-                    platform: "Linux".to_string(),
-                    error_code: None,
-                    message: format!("Failed to get capabilities: {:?}", e),
-                }
-            })?;
-            *caps_guard = Some(caps.clone());
-            Ok(caps)
-        } else {
-            // Safe to unwrap here as we know it's Some from the preceding check,
-            // but use unwrap_or_else with clear message for better debugging
-            Ok(caps_guard
-                .as_ref()
-                .unwrap_or_else(|| panic!("Critical error: capabilities should exist after preceding None check - this indicates a race condition or programming error"))
-                .clone())
-        }
+        self.capabilities
+            .get_or_try_init(|| async {
+                let connection = self.get_connection().await?;
+                let proxy = NotificationsProxy::new(&connection).await.map_err(|e| {
+                    crate::components::NotificationError::PlatformError {
+                        platform: "Linux".to_string(),
+                        error_code: None,
+                        message: format!("Failed to create D-Bus proxy: {:?}", e),
+                    }
+                })?;
+                proxy.get_capabilities().await.map_err(|e| {
+                    crate::components::NotificationError::PlatformError {
+                        platform: "Linux".to_string(),
+                        error_code: None,
+                        message: format!("Failed to get capabilities: {:?}", e),
+                    }
+                })
+            })
+            .await
+            .cloned()
     }
 
     #[cfg(target_os = "linux")]
@@ -288,9 +275,10 @@ impl PlatformBackend for LinuxBackend {
         })
     }
 
+    #[allow(unused_variables)]
     fn deliver_notification(
         &self,
-        _request: &NotificationRequest,
+        request: &NotificationRequest,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = NotificationResult<DeliveryReceipt>> + Send + '_>,
     > {
@@ -307,6 +295,16 @@ impl PlatformBackend for LinuxBackend {
                     }
                 })?;
 
+                // Resolve all media images (downloads remote URLs to temp files)
+                let resolved_images = super::image_utils::resolve_media_images(&request.content.media).await;
+
+                // Extract app icon path from resolved images (first AppIcon or any image)
+                let app_icon_path = resolved_images.iter()
+                    .find(|(placement, _)| *placement == crate::components::ImagePlacement::AppIcon)
+                    .or_else(|| resolved_images.first())
+                    .map(|(_, resolved)| resolved.path.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
                 // Create hints for the notification
                 let hints = self.create_hints(request);
 
@@ -314,7 +312,7 @@ impl PlatformBackend for LinuxBackend {
                 let mut actions = Vec::new();
                 for action in &request.content.interactions.actions {
                     actions.push(action.id.as_str());
-                    actions.push(&action.title);
+                    actions.push(&action.label);
                 }
 
                 // Set expire timeout based on priority
@@ -329,15 +327,26 @@ impl PlatformBackend for LinuxBackend {
                     },
                 };
 
-                // Send the notification
+                // Check if server supports body-markup capability for Pango rendering
+                let capabilities = self.get_capabilities().await.unwrap_or_default();
+                let supports_markup = capabilities.contains(&"body-markup".to_string())
+                    || capabilities.contains(&"markup".to_string());
+
+                let body_text = if supports_markup {
+                    request.content.body.to_pango_markup()
+                } else {
+                    request.content.body.to_structured_plain_text()
+                };
+
+                // Send the notification with resolved app icon
                 let start_time = SystemTime::now();
                 let notification_id = proxy
                     .notify(
-                        "ECS Notifications",
+                        "KODEGEN",
                         0,  // replaces_id - 0 for new notification
-                        "", // app_icon - empty uses default
+                        &app_icon_path, // app_icon - local file path (downloaded if remote)
                         &request.content.title,
-                        &request.content.body.to_plain_text(),
+                        &body_text,
                         actions.iter().map(|s| *s).collect(),
                         hints,
                         expire_timeout,
@@ -356,14 +365,16 @@ impl PlatformBackend for LinuxBackend {
                     "dbus_service".to_string(),
                     "org.freedesktop.Notifications".to_string(),
                 );
-                metadata.insert("notification_id".to_string(), notification_id.to_string());
+                // Track delivery latency
+                let delivery_latency = SystemTime::now().duration_since(start_time).unwrap_or_default();
+                
+                // Create delivery receipt using the builder pattern
+                let receipt = DeliveryReceipt::new(Platform::Linux, notification_id.to_string())
+                    .with_latency(delivery_latency)
+                    .with_metadata("notification_id".to_string(), notification_id.to_string())
+                    .with_metadata("delivery_latency_ms".to_string(), delivery_latency.as_millis().to_string());
 
-                Ok(DeliveryReceipt {
-                    platform: Platform::Linux,
-                    native_id: notification_id.to_string(),
-                    delivered_at: SystemTime::now(),
-                    metadata,
-                })
+                Ok(receipt)
             }
 
             #[cfg(not(target_os = "linux"))]
@@ -377,10 +388,11 @@ impl PlatformBackend for LinuxBackend {
         })
     }
 
+    #[allow(unused_variables)]
     fn update_notification(
         &self,
-        _id: &str,
-        _update: &NotificationUpdate,
+        id: &str,
+        update: &NotificationUpdate,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<()>> + Send + '_>>
     {
         Box::pin(async move {
@@ -404,10 +416,24 @@ impl PlatformBackend for LinuxBackend {
                     }
                 })?;
 
+                // Build content from either full content or content_changes map
+                let content = if let Some(ref full_content) = update.content {
+                    full_content.clone()
+                } else {
+                    // Build minimal content from content_changes
+                    let title = update.content_changes.get("title")
+                        .cloned()
+                        .unwrap_or_else(|| "Updated Notification".to_string());
+                    let body = update.content_changes.get("body")
+                        .cloned()
+                        .unwrap_or_default();
+                    crate::components::NotificationContent::new(title, body)
+                };
+
                 // Create updated notification request
                 let updated_request = NotificationRequest {
                     notification_id: id.to_string(),
-                    content: update.content.clone(),
+                    content,
                     options: update.options.clone().unwrap_or_default(),
                     correlation_id: format!("update-{}", id),
                 };
@@ -467,9 +493,10 @@ impl PlatformBackend for LinuxBackend {
         })
     }
 
+    #[allow(unused_variables)]
     fn cancel_notification(
         &self,
-        _id: &str,
+        id: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<()>> + Send + '_>>
     {
         Box::pin(async move {
@@ -523,9 +550,9 @@ impl Clone for LinuxBackend {
     fn clone(&self) -> Self {
         Self {
             #[cfg(target_os = "linux")]
-            connection: Arc::clone(&self.connection), // Clone the Arc, share the Mutex
+            connection: Arc::clone(&self.connection), // Clone the Arc, share the OnceCell
             #[cfg(target_os = "linux")]
-            capabilities: Arc::clone(&self.capabilities), // Clone the Arc, share the Mutex
+            capabilities: Arc::clone(&self.capabilities), // Clone the Arc, share the OnceCell
         }
     }
 }

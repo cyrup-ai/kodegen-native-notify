@@ -51,9 +51,11 @@ impl TracingContext {
             self.active_span = Some(span);
         }
 
+        // SAFETY: We unconditionally set active_span to Some in both branches above.
+        // If this expect fails, there's a critical bug in this function's logic.
         self.active_span
             .as_ref()
-            .unwrap_or_else(|| panic!("Critical error: active span should exist immediately after being set - this indicates a programming error in tracing logic"))
+            .expect("BUG: active_span should be Some immediately after being set in both if/else branches")
     }
 
     /// Finish the current active span

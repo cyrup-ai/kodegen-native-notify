@@ -1,6 +1,18 @@
 // Windows Toast Notifications backend - Complete implementation
 
 #[cfg(target_os = "windows")]
+use std::collections::HashMap;
+
+#[cfg(target_os = "windows")]
+use std::sync::Arc;
+
+#[cfg(target_os = "windows")]
+use std::time::SystemTime;
+
+#[cfg(target_os = "windows")]
+use tokio::sync::OnceCell;
+
+#[cfg(target_os = "windows")]
 use windows::{
     ApplicationModel::AppInfo,
     Data::Xml::Dom::XmlDocument,
@@ -14,11 +26,17 @@ use crate::components::platform::{
     DeliveryReceipt, NotificationRequest, NotificationUpdate, PlatformBackend, PlatformCapabilities,
 };
 
+#[cfg(target_os = "windows")]
+use crate::components::platform::{CompatibilityLevel, PermissionLevel};
+
+#[cfg(target_os = "windows")]
+use crate::components::Platform;
+
 pub struct WindowsBackend {
     #[cfg(target_os = "windows")]
     app_id: String,
     #[cfg(target_os = "windows")]
-    notifier: Arc<Mutex<Option<ToastNotifier>>>,
+    notifier: Arc<OnceCell<ToastNotifier>>,
 }
 
 impl Default for WindowsBackend {
@@ -33,71 +51,76 @@ impl WindowsBackend {
             #[cfg(target_os = "windows")]
             app_id: "EcsNotifications.App".to_string(),
             #[cfg(target_os = "windows")]
-            notifier: Arc::new(Mutex::new(None)),
+            notifier: Arc::new(OnceCell::new()),
         }
     }
 
     #[cfg(target_os = "windows")]
     async fn get_notifier(&self) -> Result<ToastNotifier, crate::components::NotificationError> {
-        let mut notifier_guard = self.notifier.lock().map_err(|_| {
-            crate::components::NotificationError::PlatformError {
-                platform: "Windows".to_string(),
-                error_code: None,
-                message: "Failed to acquire notifier lock".to_string(),
-            }
-        })?;
-
-        if notifier_guard.is_none() {
-            let app_id = HSTRING::from(&self.app_id);
-            let notifier =
+        self.notifier
+            .get_or_try_init(|| async {
+                let app_id = HSTRING::from(&self.app_id);
                 ToastNotificationManager::CreateToastNotifierWithId(&app_id).map_err(|e| {
                     crate::components::NotificationError::PlatformError {
                         platform: "Windows".to_string(),
                         error_code: Some(e.code().0 as i32),
                         message: format!("Failed to create toast notifier: {:?}", e),
                     }
-                })?;
-            *notifier_guard = Some(notifier.clone());
-            Ok(notifier)
-        } else {
-            // Safe to unwrap here as we know it's Some from the preceding check,
-            // but use unwrap_or_else with clear message for better debugging
-            Ok(notifier_guard
-                .as_ref()
-                .unwrap_or_else(|| panic!("Critical error: notifier should exist after preceding None check - this indicates a race condition or programming error"))
-                .clone())
-        }
+                })
+            })
+            .await
+            .cloned()
     }
 
     #[cfg(target_os = "windows")]
-    fn create_toast_xml(&self, title: &str, body: &str) -> WindowsResult<XmlDocument> {
-        // Escape XML content to prevent injection
-        let escaped_title = title
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;");
-        let escaped_body = body
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;");
-
+    fn create_toast_xml(
+        &self,
+        title: &str,
+        subtitle: Option<&str>,
+        body: &str,
+        hero_image_url: Option<&str>,
+        app_logo_url: Option<&str>,
+    ) -> WindowsResult<XmlDocument> {
+        let escaped_title = xml_escape(title);
+        let escaped_body = xml_escape(body);
+        
+        // Hero image (large banner at top)
+        let hero_element = hero_image_url
+            .map(|url| format!(
+                r#"<image placement="hero" src="{}"/>"#,
+                xml_escape(url)
+            ))
+            .unwrap_or_default();
+        
+        // App logo override (replaces default app icon)
+        let logo_element = app_logo_url
+            .map(|url| format!(
+                r#"<image placement="appLogoOverride" hint-crop="circle" src="{}"/>"#,
+                xml_escape(url)
+            ))
+            .unwrap_or_default();
+        
+        // Subtitle as secondary styled text
+        let subtitle_element = subtitle
+            .map(|s| format!(
+                r#"<text hint-style="captionSubtle">{}</text>"#,
+                xml_escape(s)
+            ))
+            .unwrap_or_default();
+        
         let toast_xml = format!(
-            r#"
-<toast>
+            r#"<toast>
     <visual>
         <binding template="ToastGeneric">
-            <text>{}</text>
-            <text>{}</text>
+            {hero_element}
+            {logo_element}
+            <text hint-style="title">{escaped_title}</text>
+            {subtitle_element}
+            <text hint-style="body">{escaped_body}</text>
         </binding>
     </visual>
-    <actions>
-        <input id="textBox" type="text" placeHolderContent="Type something..." />
-        <action activationType="background" content="Reply" arguments="reply" />
-        <action activationType="background" content="Dismiss" arguments="dismiss" />
-    </actions>
-</toast>
-"#,
-            escaped_title, escaped_body
+    <audio src="ms-winsoundevent:Notification.Default"/>
+</toast>"#
         );
 
         let xml_doc = XmlDocument::new()?;
@@ -105,6 +128,15 @@ impl WindowsBackend {
         xml_doc.LoadXml(&xml_hstring)?;
         Ok(xml_doc)
     }
+}
+
+#[cfg(target_os = "windows")]
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 impl WindowsBackend {
@@ -204,9 +236,10 @@ impl PlatformBackend for WindowsBackend {
         })
     }
 
+    #[allow(unused_variables)]
     fn deliver_notification(
         &self,
-        _request: &NotificationRequest,
+        request: &NotificationRequest,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = NotificationResult<DeliveryReceipt>> + Send + '_>,
     > {
@@ -215,11 +248,32 @@ impl PlatformBackend for WindowsBackend {
             {
                 let notifier = self.get_notifier().await?;
 
-                // Create XML content for the toast
+                // Resolve all media images (downloads remote URLs to temp files)
+                let resolved_images = super::image_utils::resolve_media_images(&request.content.media).await;
+
+                // Extract hero image path from resolved images
+                let hero_image_path = resolved_images.iter()
+                    .find(|(placement, _)| *placement == crate::components::ImagePlacement::Hero)
+                    .map(|(_, resolved)| resolved.path.to_string_lossy().to_string());
+
+                // Extract app logo path from resolved images
+                let app_logo_path = resolved_images.iter()
+                    .find(|(placement, _)| *placement == crate::components::ImagePlacement::AppIcon)
+                    .map(|(_, resolved)| resolved.path.to_string_lossy().to_string());
+
+                // Extract subtitle from content or body
+                let subtitle = request.content.subtitle.clone()
+                    .or_else(|| request.content.body.extract_subtitle());
+
+                // Create XML content for the toast with enhanced formatting
+                // Use local file paths (downloaded from remote URLs if needed)
                 let xml_doc = self
                     .create_toast_xml(
                         &request.content.title,
-                        &request.content.body.as_plain_text(),
+                        subtitle.as_deref(),
+                        &request.content.body.to_structured_plain_text(),
+                        hero_image_path.as_deref(),
+                        app_logo_path.as_deref(),
                     )
                     .map_err(|e| crate::components::NotificationError::PlatformError {
                         platform: "Windows".to_string(),
@@ -276,18 +330,13 @@ impl PlatformBackend for WindowsBackend {
                     }
                 })?;
 
-                // Create delivery receipt
-                let mut metadata = HashMap::new();
-                metadata.insert("platform_api".to_string(), "WinRT".to_string());
-                metadata.insert("toast_template".to_string(), "ToastGeneric".to_string());
-                metadata.insert("app_id".to_string(), self.app_id.clone());
+                // Create delivery receipt using the builder pattern
+                let receipt = DeliveryReceipt::new(Platform::Windows, request.notification_id.clone())
+                    .with_metadata("platform_api".to_string(), "WinRT".to_string())
+                    .with_metadata("toast_template".to_string(), "ToastGeneric".to_string())
+                    .with_metadata("app_id".to_string(), self.app_id.clone());
 
-                Ok(DeliveryReceipt {
-                    platform: Platform::Windows,
-                    native_id: request.notification_id.clone(),
-                    delivered_at: SystemTime::now(),
-                    metadata,
-                })
+                Ok(receipt)
             }
 
             #[cfg(not(target_os = "windows"))]
@@ -301,10 +350,11 @@ impl PlatformBackend for WindowsBackend {
         })
     }
 
+    #[allow(unused_variables)]
     fn update_notification(
         &self,
-        _id: &str,
-        _update: &NotificationUpdate,
+        id: &str,
+        update: &NotificationUpdate,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<()>> + Send + '_>>
     {
         Box::pin(async move {
@@ -316,16 +366,37 @@ impl PlatformBackend for WindowsBackend {
                 // First, try to remove the existing notification
                 let _ = self.cancel_notification(id).await;
 
-                // Create new notification with updated content
-                let updated_request = NotificationRequest {
-                    notification_id: id.to_string(),
-                    content: update.content.clone(),
-                    options: update.options.clone().unwrap_or_default(),
-                    correlation_id: format!("update-{}", id),
-                };
+                // Build updated content from content_changes map
+                let title = update.content_changes.get("title")
+                    .cloned()
+                    .unwrap_or_else(|| "Updated Notification".to_string());
+                let body = update.content_changes.get("body")
+                    .cloned()
+                    .unwrap_or_default();
 
-                // Deliver the updated notification
-                self.deliver_notification(&updated_request).await?;
+                // Create XML for updated toast
+                let xml_doc = self.create_toast_xml(&title, None, &body, None, None)
+                    .map_err(|e| crate::components::NotificationError::PlatformError {
+                        platform: "Windows".to_string(),
+                        error_code: Some(e.code().0 as i32),
+                        message: format!("Failed to create updated toast XML: {:?}", e),
+                    })?;
+
+                // Create and show the updated toast
+                let notifier = self.get_notifier().await?;
+                let toast = ToastNotification::CreateToastNotification(&xml_doc)
+                    .map_err(|e| crate::components::NotificationError::PlatformError {
+                        platform: "Windows".to_string(),
+                        error_code: Some(e.code().0 as i32),
+                        message: format!("Failed to create updated toast notification: {:?}", e),
+                    })?;
+
+                notifier.Show(&toast)
+                    .map_err(|e| crate::components::NotificationError::PlatformError {
+                        platform: "Windows".to_string(),
+                        error_code: Some(e.code().0 as i32),
+                        message: format!("Failed to show updated toast notification: {:?}", e),
+                    })?;
 
                 Ok(())
             }
@@ -341,9 +412,10 @@ impl PlatformBackend for WindowsBackend {
         })
     }
 
+    #[allow(unused_variables)]
     fn cancel_notification(
         &self,
-        _id: &str,
+        id: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<()>> + Send + '_>>
     {
         Box::pin(async move {
@@ -389,7 +461,7 @@ impl Clone for WindowsBackend {
             #[cfg(target_os = "windows")]
             app_id: self.app_id.clone(),
             #[cfg(target_os = "windows")]
-            notifier: Arc::clone(&self.notifier), // Clone the Arc, share the Mutex
+            notifier: Arc::clone(&self.notifier), // Clone the Arc, share the OnceCell
         }
     }
 }

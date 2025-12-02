@@ -11,6 +11,9 @@ use tokio::sync::RwLock;
 
 use super::NotificationResult;
 
+// Re-export DeliveryReceipt for backend modules
+pub use super::DeliveryReceipt;
+
 /// Comprehensive platform integration component supporting dynamic capability negotiation
 /// Incorporates patterns from Linux D-Bus capability detection, Windows adaptive UI,
 /// macOS authorization flows, and web standards compatibility
@@ -1129,12 +1132,20 @@ pub struct NotificationRequest {
 }
 
 /// Notification update for content changes
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NotificationUpdate {
+    /// Map of field names to new values (for simple updates)
     pub content_changes: HashMap<String, String>,
+    /// Media attachment changes
     pub media_changes: Vec<MediaChange>,
+    /// Action button changes
     pub action_changes: Vec<ActionChange>,
+    /// Full content replacement (optional - use for complete content updates)
+    pub content: Option<NotificationContent>,
+    /// Updated delivery options (optional)
+    pub options: Option<DeliveryOptions>,
 }
+
 
 /// Media change for updates
 #[derive(Debug, Clone)]
@@ -1159,21 +1170,43 @@ pub enum ActionChange {
 }
 
 /// Delivery options for platform-specific configuration
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DeliveryOptions {
+    /// Priority level (platform-specific interpretation)
     pub priority: Option<i32>,
+    /// Time-to-live for the notification
     pub ttl: Option<Duration>,
+    /// ID of notification to replace (for updates)
     pub replace_id: Option<String>,
+    /// Platform-specific key-value options
     pub platform_specific: HashMap<String, String>,
+    /// Maximum time to wait for platform delivery confirmation.
+    ///
+    /// This timeout covers the round-trip from scheduling the notification
+    /// to receiving the platform's completion callback. Reasonable values:
+    /// - 3-5 seconds: Fast networks, no permission prompts expected
+    /// - 10 seconds: Default, handles first-run permission prompts
+    /// - 30+ seconds: Slow systems, enterprise MDM environments
+    ///
+    /// If timeout is reached, the notification is cancelled to prevent
+    /// ghost notifications appearing after the caller has given up.
+    pub delivery_timeout: Duration,
 }
 
-/// Delivery receipt from successful notification
-#[derive(Debug, Clone)]
-pub struct DeliveryReceipt {
-    pub platform: Platform,
-    pub native_id: String,
-    pub delivered_at: std::time::SystemTime,
-    pub metadata: HashMap<String, String>,
+impl Default for DeliveryOptions {
+    fn default() -> Self {
+        Self {
+            priority: None,
+            ttl: None,
+            replace_id: None,
+            platform_specific: HashMap::new(),
+            // 10 seconds is generous enough for:
+            // - First notification requiring macOS permission prompt
+            // - System under moderate load
+            // - Enterprise environments with MDM policies
+            delivery_timeout: Duration::from_secs(10),
+        }
+    }
 }
 
 // Re-export commonly used types from content module for convenience

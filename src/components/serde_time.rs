@@ -106,3 +106,40 @@ where
         }
     }))
 }
+
+/// Module for serializing/deserializing Option<SystemTime>
+pub mod systemtime_option {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Serialize an Option<SystemTime> as nanoseconds since UNIX_EPOCH
+    pub fn serialize<S>(
+        time: &Option<SystemTime>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match time {
+            Some(time) => {
+                let nanos = time
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(serde::ser::Error::custom)?
+                    .as_nanos();
+                serializer.serialize_some(&nanos)
+            },
+            None => serializer.serialize_none(),
+        }
+    }
+
+    /// Deserialize an Option<SystemTime> from nanoseconds since UNIX_EPOCH
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SystemTime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Option::<u128>::deserialize(deserializer)?.map(|nanos| {
+            UNIX_EPOCH + Duration::from_nanos(nanos as u64)
+        }))
+    }
+}

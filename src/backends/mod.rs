@@ -1,9 +1,12 @@
 // Real platform backends - complete implementations
 // Each backend provides actual platform integration
 
+pub mod image_utils;
 pub mod linux;
 pub mod macos;
 pub mod windows;
+
+pub use image_utils::{resolve_image_to_path, resolve_media_images, ResolvedImage, cleanup_temp_image, cleanup_all_cached_images};
 
 use std::collections::HashMap;
 

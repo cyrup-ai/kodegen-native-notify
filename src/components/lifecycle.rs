@@ -2,13 +2,17 @@
 // Based on comprehensive study of Slack's distributed tracing, Discord's state management,
 // Teams' client data layer, and production notification delivery patterns
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
 use super::time_wrapper::DefaultableInstant;
-use super::{CorrelationId, NotificationError, NotificationResult, Platform};
+use super::{CorrelationId, DeliveryReceipt, NotificationError, NotificationResult, Platform};
+
+// Capacity limits for bounded vectors to prevent unbounded memory growth
+const MAX_STATE_HISTORY: usize = 50;
+const MAX_STATE_TRANSITIONS: usize = 50;
 
 /// Comprehensive notification lifecycle management component
 /// Incorporates enterprise patterns for state tracking, retry logic, and observability
@@ -27,7 +31,7 @@ pub struct NotificationLifecycle {
     /// Delivery receipt and confirmation
     pub delivery_receipt: Option<DeliveryReceipt>,
     /// State transition history for debugging
-    pub state_history: Vec<StateTransition>,
+    pub state_history: VecDeque<StateTransition>,
     /// Performance metrics collection
     pub performance_metrics: PerformanceMetrics,
 }
@@ -35,6 +39,14 @@ pub struct NotificationLifecycle {
 impl NotificationLifecycle {
     pub fn new() -> Self {
         let now = DefaultableInstant::now();
+        let mut state_history = VecDeque::new();
+        state_history.push_back(StateTransition {
+            from_state: None,
+            to_state: NotificationState::Created,
+            timestamp: now.inner(),
+            reason: TransitionReason::Initial,
+            correlation_id: None,
+        });
         Self {
             state: NotificationState::Created,
             platform_states: HashMap::new(),
@@ -42,13 +54,7 @@ impl NotificationLifecycle {
             retry_policy: RetryPolicy::default(),
             expiration: ExpirationPolicy::default(),
             delivery_receipt: None,
-            state_history: vec![StateTransition {
-                from_state: None,
-                to_state: NotificationState::Created,
-                timestamp: now.inner(),
-                reason: TransitionReason::Initial,
-                correlation_id: None,
-            }],
+            state_history,
             performance_metrics: PerformanceMetrics::new(),
         }
     }
@@ -132,9 +138,12 @@ impl NotificationLifecycle {
             _ => {},
         }
 
-        // Update state and history
+        // Update state and history with bounded growth
         self.state = new_state;
-        self.state_history.push(transition);
+        if self.state_history.len() >= MAX_STATE_HISTORY {
+            self.state_history.pop_front();
+        }
+        self.state_history.push_back(transition);
 
         // Update performance metrics
         self.performance_metrics
@@ -145,31 +154,33 @@ impl NotificationLifecycle {
 
     /// Check if notification has expired based on TTL or absolute expiration
     pub fn is_expired(&self) -> bool {
-        let now = DefaultableInstant::now();
+        let now_instant = DefaultableInstant::now();
+        let now_system = SystemTime::now();
 
-        // Check absolute expiration time
+        // Check absolute expiration time (wall clock)
         if let Some(expires_at) = self.expiration.expires_at
-            && now.inner() >= expires_at {
-                return true;
-            }
+            && now_system >= expires_at
+        {
+            return true;
+        }
 
-        // Check TTL from creation
+        // Check TTL from creation (relative time)
         if let Some(ttl) = self.expiration.ttl
-            && now.duration_since(self.timing.created_at) >= ttl {
+            && now_instant.duration_since(self.timing.created_at) >= ttl {
                 return true;
             }
 
-        // Check state-specific timeouts
+        // Check state-specific timeouts (relative time)
         match &self.state {
             NotificationState::Delivering => {
                 if let Some(started) = self.timing.delivery_started
-                    && now.duration_since(started) > self.expiration.delivery_timeout {
+                    && now_instant.duration_since(started) > self.expiration.delivery_timeout {
                         return true;
                     }
             },
             NotificationState::InteractionPending => {
                 if let Some(delivered) = self.timing.delivered_at
-                    && now.duration_since(delivered) > self.expiration.interaction_timeout {
+                    && now_instant.duration_since(delivered) > self.expiration.interaction_timeout {
                         return true;
                     }
             },
@@ -743,9 +754,9 @@ pub enum CircuitBreakerState {
 pub struct ExpirationPolicy {
     /// Time-to-live from creation
     pub ttl: Option<Duration>,
-    /// Absolute expiration time
-    #[serde(skip)]
-    pub expires_at: Option<Instant>,
+    /// Absolute expiration time (wall clock time)
+    #[serde(with = "super::serde_time::systemtime_option")]
+    pub expires_at: Option<SystemTime>,
     /// Maximum time allowed for delivery
     pub delivery_timeout: Duration,
     /// Maximum time to wait for user interaction
@@ -766,28 +777,20 @@ impl Default for ExpirationPolicy {
     }
 }
 
-/// Delivery receipt for successful notifications
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DeliveryReceipt {
-    pub platform: Platform,
-    pub native_id: String,
-    #[serde(skip)]
-    pub delivered_at: Instant,
-    pub delivery_latency: Duration,
-    pub receipt_id: String,
-    pub metadata: HashMap<String, String>,
-}
-
-impl Default for DeliveryReceipt {
-    fn default() -> Self {
+impl ExpirationPolicy {
+    /// Create an expiration policy that expires after the specified duration
+    pub fn expires_in(duration: Duration) -> Self {
         Self {
-            platform: Platform::default(),
-            native_id: String::default(),
-            delivered_at: DefaultableInstant::now().inner(),
-            delivery_latency: Duration::default(),
-            receipt_id: String::default(),
-            metadata: HashMap::default(),
+            expires_at: Some(SystemTime::now() + duration),
+            ..Default::default()
+        }
+    }
+
+    /// Create an expiration policy that expires at a specific time
+    pub fn expires_at_time(time: SystemTime) -> Self {
+        Self {
+            expires_at: Some(time),
+            ..Default::default()
         }
     }
 }
@@ -860,7 +863,7 @@ pub enum DeliveryProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceMetrics {
     /// State transition timings
-    pub state_transitions: Vec<StateTransitionMetric>,
+    pub state_transitions: VecDeque<StateTransitionMetric>,
     /// Platform-specific performance
     pub platform_metrics: HashMap<Platform, PlatformMetrics>,
     /// Overall performance indicators
@@ -876,7 +879,7 @@ impl Default for PerformanceMetrics {
 impl PerformanceMetrics {
     pub fn new() -> Self {
         Self {
-            state_transitions: Vec::new(),
+            state_transitions: VecDeque::new(),
             platform_metrics: HashMap::new(),
             overall_metrics: OverallMetrics::default(),
         }
@@ -896,12 +899,16 @@ impl PerformanceMetrics {
         };
 
         // Calculate duration in previous state
-        if let Some(last_transition) = self.state_transitions.last_mut() {
+        if let Some(last_transition) = self.state_transitions.back_mut() {
             last_transition.duration_in_previous_state =
                 Some(timestamp.duration_since(last_transition.timestamp));
         }
 
-        self.state_transitions.push(transition);
+        // Bounded growth: keep only MAX_STATE_TRANSITIONS most recent transitions
+        if self.state_transitions.len() >= MAX_STATE_TRANSITIONS {
+            self.state_transitions.pop_front();
+        }
+        self.state_transitions.push_back(transition);
         self.overall_metrics.total_state_transitions += 1;
     }
 

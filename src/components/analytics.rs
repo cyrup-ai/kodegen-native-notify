@@ -10,6 +10,19 @@ use serde::{Deserialize, Serialize};
 use super::time_wrapper::DefaultableInstant;
 use super::{CorrelationId, NotificationId, Platform, SpanId, TraceId};
 
+// Capacity limits for bounded vectors to prevent unbounded memory growth
+const MAX_ERRORS: usize = 1000;
+const MAX_INTERACTIONS: usize = 100;
+const MAX_INTERACTION_SEQUENCE: usize = 100;
+const MAX_PREFERENCE_SIGNALS: usize = 100;
+const MAX_BEHAVIOR_PATTERNS: usize = 100;
+const MAX_CONVERSION_EVENTS: usize = 50;
+const MAX_SERVICE_HOPS: usize = 100;
+const MAX_TRACE_EVENTS: usize = 100;
+const MAX_AB_TEST_RESULTS: usize = 100;
+const MAX_CONTENT_VARIATIONS: usize = 100;
+const MAX_ERROR_TRENDS: usize = 1000;
+
 /// Comprehensive notification analytics component for enterprise observability
 /// Incorporates patterns from Slack's performance monitoring, Discord's user engagement tracking,
 /// Teams' client data layer analytics, and production notification effectiveness measurement
@@ -359,9 +372,9 @@ impl PerformanceMetrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserBehaviorMetrics {
     /// Interaction patterns
-    pub interactions: Vec<UserInteraction>,
+    pub interactions: VecDeque<UserInteraction>,
     pub interaction_types: HashMap<InteractionType, u32>,
-    pub interaction_sequence: Vec<InteractionSequenceEvent>,
+    pub interaction_sequence: VecDeque<InteractionSequenceEvent>,
 
     /// Engagement quality
     pub attention_score: f64,
@@ -374,8 +387,8 @@ pub struct UserBehaviorMetrics {
     pub attention_context: Option<AttentionContext>,
 
     /// Learning signals for personalization
-    pub preference_signals: Vec<PreferenceSignal>,
-    pub behavior_patterns: Vec<BehaviorPattern>,
+    pub preference_signals: VecDeque<PreferenceSignal>,
+    pub behavior_patterns: VecDeque<BehaviorPattern>,
 
     /// Timing analysis
     pub time_to_first_interaction: Option<Duration>,
@@ -392,17 +405,17 @@ impl Default for UserBehaviorMetrics {
 impl UserBehaviorMetrics {
     pub fn new() -> Self {
         Self {
-            interactions: Vec::new(),
+            interactions: VecDeque::new(),
             interaction_types: HashMap::new(),
-            interaction_sequence: Vec::new(),
+            interaction_sequence: VecDeque::new(),
             attention_score: 0.0,
             engagement_depth: EngagementDepth::None,
             user_intent_signals: Vec::new(),
             device_context: None,
             user_context: None,
             attention_context: None,
-            preference_signals: Vec::new(),
-            behavior_patterns: Vec::new(),
+            preference_signals: VecDeque::new(),
+            behavior_patterns: VecDeque::new(),
             time_to_first_interaction: None,
             total_interaction_time: Duration::ZERO,
             interaction_frequency: 0.0,
@@ -421,8 +434,11 @@ impl UserBehaviorMetrics {
             .entry(interaction.interaction_type)
             .or_insert(0) += 1;
 
-        // Add to sequence
-        self.interaction_sequence.push(InteractionSequenceEvent {
+        // Add to sequence with bounded growth
+        if self.interaction_sequence.len() >= MAX_INTERACTION_SEQUENCE {
+            self.interaction_sequence.pop_front();
+        }
+        self.interaction_sequence.push_back(InteractionSequenceEvent {
             timestamp: interaction.timestamp,
             interaction_type: interaction.interaction_type,
             context: interaction.context.clone(),
@@ -431,16 +447,22 @@ impl UserBehaviorMetrics {
         // Update engagement depth
         self.update_engagement_depth(&interaction);
 
-        // Record preference signals
+        // Record preference signals with bounded growth
         if let Some(preference) = self.extract_preference_signal(&interaction) {
-            self.preference_signals.push(preference);
+            if self.preference_signals.len() >= MAX_PREFERENCE_SIGNALS {
+                self.preference_signals.pop_front();
+            }
+            self.preference_signals.push_back(preference);
         }
 
         // Update total interaction time
         self.total_interaction_time += interaction.duration.unwrap_or(Duration::ZERO);
 
-        // Store interaction
-        self.interactions.push(interaction);
+        // Store interaction with bounded growth
+        if self.interactions.len() >= MAX_INTERACTIONS {
+            self.interactions.pop_front();
+        }
+        self.interactions.push_back(interaction);
 
         // Calculate attention score
         self.calculate_attention_score();
@@ -478,6 +500,14 @@ impl UserBehaviorMetrics {
             }),
             _ => None,
         }
+    }
+
+    /// Record a behavior pattern with bounded growth
+    pub fn record_behavior_pattern(&mut self, pattern: BehaviorPattern) {
+        if self.behavior_patterns.len() >= MAX_BEHAVIOR_PATTERNS {
+            self.behavior_patterns.pop_front();
+        }
+        self.behavior_patterns.push_back(pattern);
     }
 
     fn calculate_attention_score(&mut self) {
@@ -753,8 +783,8 @@ pub struct DistributedTraceData {
     pub trace_id: TraceId,
     pub span_id: SpanId,
     pub parent_span_id: Option<SpanId>,
-    pub service_hops: Vec<ServiceHop>,
-    pub trace_events: Vec<TraceEvent>,
+    pub service_hops: VecDeque<ServiceHop>,
+    pub trace_events: VecDeque<TraceEvent>,
     pub trace_attributes: HashMap<String, String>,
 }
 
@@ -765,8 +795,8 @@ impl DistributedTraceData {
             trace_id: TraceId::generate(),
             span_id: SpanId::generate(),
             parent_span_id: None,
-            service_hops: Vec::new(),
-            trace_events: Vec::new(),
+            service_hops: VecDeque::new(),
+            trace_events: VecDeque::new(),
             trace_attributes: HashMap::new(),
         }
     }
@@ -781,7 +811,11 @@ impl DistributedTraceData {
             metadata: HashMap::new(),
         };
 
-        self.trace_events.push(event);
+        // Bounded growth: keep only MAX_TRACE_EVENTS most recent events
+        if self.trace_events.len() >= MAX_TRACE_EVENTS {
+            self.trace_events.pop_front();
+        }
+        self.trace_events.push_back(event);
     }
 
     pub fn record_error(&mut self, error: &AnalyticsError) {
@@ -797,7 +831,19 @@ impl DistributedTraceData {
             metadata,
         };
 
-        self.trace_events.push(event);
+        // Bounded growth: keep only MAX_TRACE_EVENTS most recent events
+        if self.trace_events.len() >= MAX_TRACE_EVENTS {
+            self.trace_events.pop_front();
+        }
+        self.trace_events.push_back(event);
+    }
+
+    /// Record a service hop in the distributed trace with bounded growth
+    pub fn record_service_hop(&mut self, hop: ServiceHop) {
+        if self.service_hops.len() >= MAX_SERVICE_HOPS {
+            self.service_hops.pop_front();
+        }
+        self.service_hops.push_back(hop);
     }
 }
 
@@ -869,7 +915,7 @@ pub enum TraceEventType {
 /// Business metrics for ROI and effectiveness
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusinessMetrics {
-    pub conversion_events: Vec<ConversionEvent>,
+    pub conversion_events: VecDeque<ConversionEvent>,
     pub user_journey_stage: JourneyStage,
     pub business_value: f64,
     pub cost_metrics: CostMetrics,
@@ -885,7 +931,7 @@ impl Default for BusinessMetrics {
 impl BusinessMetrics {
     pub fn new() -> Self {
         Self {
-            conversion_events: Vec::new(),
+            conversion_events: VecDeque::new(),
             user_journey_stage: JourneyStage::Awareness,
             business_value: 0.0,
             cost_metrics: CostMetrics::default(),
@@ -894,25 +940,28 @@ impl BusinessMetrics {
     }
 
     pub fn record_user_engagement(&mut self, interaction: &UserInteraction) {
-        // Convert interactions to business events
-        match interaction.interaction_type {
-            InteractionType::ActionPressed => {
-                self.conversion_events.push(ConversionEvent {
-                    event_type: ConversionType::Engagement,
-                    value: 1.0,
-                    timestamp: interaction.timestamp,
-                    metadata: interaction.metadata.clone(),
-                });
-            },
-            InteractionType::SharedContent => {
-                self.conversion_events.push(ConversionEvent {
-                    event_type: ConversionType::Referral,
-                    value: 5.0, // Higher value for sharing
-                    timestamp: interaction.timestamp,
-                    metadata: interaction.metadata.clone(),
-                });
-            },
-            _ => {},
+        // Convert interactions to business events with bounded growth
+        let event = match interaction.interaction_type {
+            InteractionType::ActionPressed => Some(ConversionEvent {
+                event_type: ConversionType::Engagement,
+                value: 1.0,
+                timestamp: interaction.timestamp,
+                metadata: interaction.metadata.clone(),
+            }),
+            InteractionType::SharedContent => Some(ConversionEvent {
+                event_type: ConversionType::Referral,
+                value: 5.0, // Higher value for sharing
+                timestamp: interaction.timestamp,
+                metadata: interaction.metadata.clone(),
+            }),
+            _ => None,
+        };
+
+        if let Some(event) = event {
+            if self.conversion_events.len() >= MAX_CONVERSION_EVENTS {
+                self.conversion_events.pop_front();
+            }
+            self.conversion_events.push_back(event);
         }
 
         self.update_business_value();
@@ -1044,10 +1093,10 @@ pub struct RetentionMetrics {
 /// Error analytics for failure analysis
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorAnalytics {
-    pub errors: Vec<AnalyticsError>,
+    pub errors: VecDeque<AnalyticsError>,
     pub error_patterns: HashMap<ErrorType, u32>,
     pub resolution_times: HashMap<ErrorType, Duration>,
-    pub error_trends: Vec<ErrorTrendPoint>,
+    pub error_trends: VecDeque<ErrorTrendPoint>,
 }
 
 impl Default for ErrorAnalytics {
@@ -1059,10 +1108,10 @@ impl Default for ErrorAnalytics {
 impl ErrorAnalytics {
     pub fn new() -> Self {
         Self {
-            errors: Vec::new(),
+            errors: VecDeque::new(),
             error_patterns: HashMap::new(),
             resolution_times: HashMap::new(),
-            error_trends: Vec::new(),
+            error_trends: VecDeque::new(),
         }
     }
 
@@ -1072,13 +1121,21 @@ impl ErrorAnalytics {
             .entry(error.error_type.clone())
             .or_insert(0) += 1;
 
-        self.error_trends.push(ErrorTrendPoint {
+        // Bounded growth: keep only MAX_ERROR_TRENDS most recent trend points
+        if self.error_trends.len() >= MAX_ERROR_TRENDS {
+            self.error_trends.pop_front();
+        }
+        self.error_trends.push_back(ErrorTrendPoint {
             timestamp: DefaultableInstant::now(),
             error_type: error.error_type.clone(),
             count: 1,
         });
 
-        self.errors.push(error);
+        // Bounded growth: keep only MAX_ERRORS most recent errors
+        if self.errors.len() >= MAX_ERRORS {
+            self.errors.pop_front();
+        }
+        self.errors.push_back(error);
     }
 
     pub fn get_error_rate(&self, time_window: Duration) -> f64 {
@@ -1153,8 +1210,8 @@ impl Default for ErrorTrendPoint {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentEffectivenessMetrics {
     pub content_performance: HashMap<String, ContentPerformance>,
-    pub a_b_test_results: Vec<ABTestResult>,
-    pub content_variations: Vec<ContentVariation>,
+    pub a_b_test_results: VecDeque<ABTestResult>,
+    pub content_variations: VecDeque<ContentVariation>,
 }
 
 impl Default for ContentEffectivenessMetrics {
@@ -1167,8 +1224,8 @@ impl ContentEffectivenessMetrics {
     pub fn new() -> Self {
         Self {
             content_performance: HashMap::new(),
-            a_b_test_results: Vec::new(),
-            content_variations: Vec::new(),
+            a_b_test_results: VecDeque::new(),
+            content_variations: VecDeque::new(),
         }
     }
 
@@ -1211,6 +1268,22 @@ impl ContentEffectivenessMetrics {
         for performance in self.content_performance.values_mut() {
             performance.update_effectiveness_score();
         }
+    }
+
+    /// Record an A/B test result with bounded growth
+    pub fn record_ab_test_result(&mut self, result: ABTestResult) {
+        if self.a_b_test_results.len() >= MAX_AB_TEST_RESULTS {
+            self.a_b_test_results.pop_front();
+        }
+        self.a_b_test_results.push_back(result);
+    }
+
+    /// Record a content variation with bounded growth
+    pub fn record_content_variation(&mut self, variation: ContentVariation) {
+        if self.content_variations.len() >= MAX_CONTENT_VARIATIONS {
+            self.content_variations.pop_front();
+        }
+        self.content_variations.push_back(variation);
     }
 }
 

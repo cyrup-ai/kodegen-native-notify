@@ -1,7 +1,7 @@
 //! Tests for components/platform.rs
 
 use std::collections::HashMap;
-use ecs_notifications::components::{
+use kodegen_native_notify::{
     Platform,
     FeatureMatrix,
     AuthorizationState,

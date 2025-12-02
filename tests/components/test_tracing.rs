@@ -1,6 +1,6 @@
 //! Tests for components/tracing.rs
 
-use ecs_notifications::components::{
+use kodegen_native_notify::{
     TracingContext,
     TraceContext,
     CorrelationId,

@@ -2,19 +2,19 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use ecs_notifications::components::{
+use kodegen_native_notify::{
     NotificationAnalytics,
     NotificationId,
     CorrelationId,
-    PerformanceMetrics,
+    AnalyticsPerformanceMetrics as PerformanceMetrics,
     UserBehaviorMetrics,
     UserInteraction,
     InteractionType,
     InteractionOutcome,
     EngagementDepth,
     Platform,
-    DefaultableInstant,
 };
+use kodegen_native_notify::components::time_wrapper::DefaultableInstant;
 
 #[test]
 fn test_analytics_creation() {
