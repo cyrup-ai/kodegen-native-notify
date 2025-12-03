@@ -1,6 +1,6 @@
 [package]
 name = "kodegen_native_notify"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 license = "Apache-2.0 OR MIT"
@@ -18,7 +18,7 @@ keywords = [
 ]
 
 [dependencies]
-kodegen_native_permissions = { version = "0.5" }
+kodegen_native_permissions = { version = "0.6" }
 
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "fs"] }
 thiserror = "2"
