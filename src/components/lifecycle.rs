@@ -674,7 +674,6 @@ impl RetryPolicy {
         }
 
         // Store the delay for monitoring and metrics
-        // Note: The actual scheduling is handled by the Bevy system using this delay
     }
 }
 

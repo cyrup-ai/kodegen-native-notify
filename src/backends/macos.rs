@@ -1,4 +1,7 @@
 // macOS UserNotifications backend - Complete implementation
+//
+// Uses UNUserNotificationCenter with kodegen-native-permissions for
+// runtime permission management.
 
 use std::collections::HashMap;
 
@@ -11,9 +14,11 @@ use objc2::rc::Retained;
 use objc2_foundation::NSString;
 #[cfg(target_os = "macos")]
 use objc2_user_notifications::{
-    UNAuthorizationStatus, UNMutableNotificationContent, UNNotificationRequest,
+    UNMutableNotificationContent, UNNotificationRequest,
     UNTimeIntervalNotificationTrigger, UNUserNotificationCenter,
 };
+
+use kodegen_native_permissions::{PermissionManager, PermissionStatus, PermissionType};
 
 use crate::components::NotificationResult;
 use crate::components::platform::{
@@ -101,7 +106,7 @@ const _: () = {
 // =============================================================================
 
 pub struct MacOSBackend {
-    // No stored fields needed - we'll get the notification center fresh each time
+    permission_manager: PermissionManager,
 }
 
 impl Default for MacOSBackend {
@@ -112,12 +117,9 @@ impl Default for MacOSBackend {
 
 impl MacOSBackend {
     pub fn new() -> Self {
-        Self {}
-    }
-
-    #[cfg(target_os = "macos")]
-    fn get_notification_center() -> Retained<UNUserNotificationCenter> {
-        UNUserNotificationCenter::currentNotificationCenter()
+        Self {
+            permission_manager: PermissionManager::new(),
+        }
     }
 
     /// Cancel a notification by removing it from both pending and delivered queues
@@ -173,89 +175,59 @@ impl MacOSBackend {
 }
 
 impl MacOSBackend {
+    /// Check if notification permissions are authorized using kodegen-native-permissions.
     pub async fn check_authorization(&self) -> NotificationResult<bool> {
         #[cfg(target_os = "macos")]
         {
-            use std::sync::{Arc, Mutex};
+            match self.permission_manager.check_permission(PermissionType::Notification) {
+                Ok(PermissionStatus::Authorized) => Ok(true),
+                Ok(_) => Ok(false),
+                Err(e) => Err(crate::components::NotificationError::PlatformError {
+                    platform: "macOS".to_string(),
+                    error_code: None,
+                    message: format!("Permission check failed: {}", e),
+                }),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        Ok(false)
+    }
 
-            use tokio::sync::oneshot;
-
-            let (tx, rx) = oneshot::channel();
-            let tx = Arc::new(Mutex::new(Some(tx)));
-
-            // No spawn needed - these are quick synchronous calls
-            // Scope the block so it's dropped before await (block is not Send)
-            {
-                let center = UNUserNotificationCenter::currentNotificationCenter();
-
-                // Create a completion handler block that captures authorization status
-                let block_tx = Arc::clone(&tx);
-
-                // Create completion handler using RcBlock directly (avoids intermediate StackBlock allocation)
-                //
-                // SAFETY: Thread-safety analysis for completion handler captures:
-                // - `block_tx: Arc<Mutex<Option<oneshot::Sender<bool>>>>` is `Send + Sync`
-                // - Apple's `getNotificationSettingsWithCompletionHandler:` invokes the block on an
-                //   arbitrary thread (typically com.apple.usernotifications.* queue)
-                // - The `block2` types are `!Send + !Sync` as a conservative default, but the code is
-                //   sound because all captured variables are verified `Send + Sync` at compile time
-                //   (see static assertions above)
-                // - The block is heap-allocated via `RcBlock::new()` and Apple retains it for the
-                //   callback duration via `_Block_copy` semantics
-                // - Reference: https://github.com/madsmtm/objc2/issues/572 (tracking Send+Sync blocks)
-                let block = RcBlock::new(fnonce_to_fn1(
-                    move |settings: std::ptr::NonNull<
-                        objc2_user_notifications::UNNotificationSettings,
-                    >| {
-                        // SAFETY: Apple guarantees valid pointer in completion handler.
-                        // NonNull<T> guarantees the pointer is non-null by construction.
-                        // No runtime check needed - NonNull is a compile-time guarantee.
-                        let settings_ref = unsafe { settings.as_ref() };
-                        let auth_status = settings_ref.authorizationStatus();
-                        let is_authorized = matches!(
-                            auth_status,
-                            UNAuthorizationStatus::Authorized | UNAuthorizationStatus::Provisional
-                        );
-
-                        // Send result through channel, handling mutex poisoning gracefully
-                        match block_tx.lock() {
-                            Ok(mut sender_guard) => {
-                                if let Some(sender) = sender_guard.take() {
-                                    let _ = sender.send(is_authorized);
-                                }
-                            }
-                            Err(poisoned) => {
-                                // Mutex was poisoned by a panic in another thread - still try to send
-                                // to avoid blocking the caller indefinitely
-                                if let Some(sender) = poisoned.into_inner().take() {
-                                    let _ = sender.send(false); // Conservative default on poison
-                                }
-                            }
+    /// Request notification permissions if not already granted.
+    /// Returns true if authorized (either already or after prompting).
+    pub async fn request_authorization(&self) -> NotificationResult<bool> {
+        #[cfg(target_os = "macos")]
+        {
+            // First check current status (uses cache if available)
+            match self.permission_manager.check_permission(PermissionType::Notification) {
+                Ok(PermissionStatus::Authorized) => Ok(true),
+                Ok(PermissionStatus::NotDetermined) => {
+                    // Not yet asked - request permission
+                    match self.permission_manager.request_permission(PermissionType::Notification).await {
+                        Ok(PermissionStatus::Authorized) => Ok(true),
+                        Ok(status) => {
+                            tracing::info!(status = ?status, "Notification permission not granted");
+                            Ok(false)
                         }
-                    },
-                ));
-
-                center.getNotificationSettingsWithCompletionHandler(&block);
-            } // block is dropped here, before the await
-
-            // Wait for the async callback with timeout
-            match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
-                Ok(Ok(is_authorized)) => Ok(is_authorized),
-                Ok(Err(_)) => {
-                    // Channel dropped - callback never fired or panicked
-                    Err(crate::components::NotificationError::PlatformError {
-                        platform: "macOS".to_string(),
-                        error_code: None,
-                        message: "Authorization callback channel dropped - callback never fired or panicked".to_string(),
-                    })
+                        Err(e) => {
+                            Err(crate::components::NotificationError::PlatformError {
+                                platform: "macOS".to_string(),
+                                error_code: None,
+                                message: format!("Permission request failed: {}", e),
+                            })
+                        }
+                    }
                 }
-                Err(_) => {
-                    // Timeout - callback didn't fire in time
-                    // Note: callback might still fire later, but result will be ignored
+                Ok(status) => {
+                    // Denied, Restricted, or Unknown
+                    tracing::info!(status = ?status, "Notification permission not available");
+                    Ok(false)
+                }
+                Err(e) => {
                     Err(crate::components::NotificationError::PlatformError {
                         platform: "macOS".to_string(),
                         error_code: None,
-                        message: "Authorization check timed out after 5 seconds - callback did not respond".to_string(),
+                        message: format!("Permission check failed: {}", e),
                     })
                 }
             }
@@ -342,17 +314,16 @@ impl PlatformBackend for MacOSBackend {
         Box::pin(async move {
             #[cfg(target_os = "macos")]
             {
-                // Check authorization before attempting to deliver
-                let is_authorized = self.check_authorization().await?;
+                // Request authorization (prompts user if not yet determined)
+                let is_authorized = self.request_authorization().await?;
                 if !is_authorized {
                     return Err(crate::components::NotificationError::AuthorizationError {
                         platform: "macOS".to_string(),
-                        required_permission: "notification_display".to_string(),
+                        required_permission: "Notification permission denied or restricted. Please enable notifications in System Settings > Notifications.".to_string(),
                     });
                 }
 
-                // Schedule notification using Bevy's AsyncComputeTaskPool for consistency
-                // This provides proper error handling while maintaining Bevy ECS patterns
+                // Schedule notification
                 let notification_id = request.notification_id.clone();
                 let request_title = request.content.title.clone();
                 let request_body = request.content.body.to_structured_plain_text();
@@ -549,56 +520,141 @@ impl PlatformBackend for MacOSBackend {
         Box::pin(async move {
             #[cfg(target_os = "macos")]
             {
-                // No spawn needed - these are quick synchronous calls
+                use std::sync::{Arc, Mutex};
+                use tokio::sync::oneshot;
+
                 let update_id = id.to_string();
                 let content_changes = update.content_changes.clone();
+                
+                // Default timeout (5 seconds, matching deliver_notification)
+                let timeout_duration = std::time::Duration::from_secs(5);
 
-                let center = UNUserNotificationCenter::currentNotificationCenter();
+                // Create oneshot channel for completion handler
+                let (completion_tx, completion_rx) = oneshot::channel();
+                let completion_tx = Arc::new(Mutex::new(Some(completion_tx)));
+                
+                // Clone for error handling
+                let error_notification_id = update_id.clone();
 
-                // On macOS, we need to remove and re-add to update
-                let identifier = NSString::from_str(&update_id);
+                // Scope the block so it's dropped before await (block is not Send)
+                {
+                    let center = UNUserNotificationCenter::currentNotificationCenter();
 
-                // Convert to NSArray for the API call
-                use objc2_foundation::NSArray;
-                let identifiers_vec = vec![&*identifier];
-                let identifiers_array = NSArray::from_slice(&identifiers_vec);
+                    // On macOS, we need to remove and re-add to update
+                    let identifier = NSString::from_str(&update_id);
 
-                center.removePendingNotificationRequestsWithIdentifiers(&identifiers_array);
-                center.removeDeliveredNotificationsWithIdentifiers(&identifiers_array);
+                    // Convert to NSArray for the API call
+                    use objc2_foundation::NSArray;
+                    let identifiers_vec = vec![&*identifier];
+                    let identifiers_array = NSArray::from_slice(&identifiers_vec);
 
-                // If update contains new content, create and schedule new notification
-                if !content_changes.is_empty() {
-                    let new_content = UNMutableNotificationContent::new();
+                    center.removePendingNotificationRequestsWithIdentifiers(&identifiers_array);
+                    center.removeDeliveredNotificationsWithIdentifiers(&identifiers_array);
 
-                    // Use content_changes fields since update.content doesn't exist
-                    if let Some(title) = content_changes.get("title") {
-                        let title_ns = NSString::from_str(title);
-                        new_content.setTitle(&title_ns);
+                    // If update contains new content, create and schedule new notification
+                    if !content_changes.is_empty() {
+                        let new_content = UNMutableNotificationContent::new();
+
+                        // Use content_changes fields since update.content doesn't exist
+                        if let Some(title) = content_changes.get("title") {
+                            let title_ns = NSString::from_str(title);
+                            new_content.setTitle(&title_ns);
+                        }
+
+                        if let Some(body) = content_changes.get("body") {
+                            let body_ns = NSString::from_str(body);
+                            new_content.setBody(&body_ns);
+                        }
+
+                        let trigger = UNTimeIntervalNotificationTrigger::triggerWithTimeInterval_repeats(
+                            0.1, false,
+                        );
+
+                        let new_identifier = NSString::from_str(&update_id);
+                        let notification_request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+                            &new_identifier,
+                            &new_content,
+                            Some(&trigger),
+                        );
+
+                        // Create completion handler using RcBlock
+                        //
+                        // SAFETY: Thread-safety analysis (verified at lines 87-104):
+                        // - `completion_tx: Arc<Mutex<Option<oneshot::Sender<bool>>>>` is `Send + Sync`
+                        // - Apple invokes completion handler on arbitrary thread
+                        // - All captured variables verified `Send + Sync` at compile time
+                        // - Block heap-allocated and retained by Apple for callback duration
+                        let completion_block = RcBlock::new(fnonce_to_fn1(
+                            move |error: *mut objc2_foundation::NSError| {
+                                // Success is indicated by null error pointer (Apple convention)
+                                let success = error.is_null();
+
+                                // Send result through channel, handling mutex poisoning gracefully
+                                match completion_tx.lock() {
+                                    Ok(mut sender_guard) => {
+                                        if let Some(sender) = sender_guard.take() {
+                                            let _ = sender.send(success);
+                                        }
+                                    }
+                                    Err(poisoned) => {
+                                        // Mutex was poisoned - still try to send with failure status
+                                        if let Some(sender) = poisoned.into_inner().take() {
+                                            let _ = sender.send(false);
+                                        }
+                                    }
+                                }
+                            },
+                        ));
+
+                        center.addNotificationRequest_withCompletionHandler(
+                            &notification_request,
+                            Some(&completion_block),
+                        );
                     }
+                } // block is dropped here, before the await
 
-                    if let Some(body) = content_changes.get("body") {
-                        let body_ns = NSString::from_str(body);
-                        new_content.setBody(&body_ns);
-                    }
-
-                    let trigger = UNTimeIntervalNotificationTrigger::triggerWithTimeInterval_repeats(
-                        0.1, false,
-                    );
-
-                    let new_identifier = NSString::from_str(&update_id);
-                    let notification_request = UNNotificationRequest::requestWithIdentifier_content_trigger(
-                        &new_identifier,
-                        &new_content,
-                        Some(&trigger),
-                    );
-
-                    center.addNotificationRequest_withCompletionHandler(
-                        &notification_request,
-                        None,
-                    );
+                // Wait for completion with timeout
+                match tokio::time::timeout(timeout_duration, completion_rx).await {
+                    Ok(Ok(true)) => {
+                        // Success - update delivered
+                        Ok(())
+                    },
+                    Ok(Ok(false)) => {
+                        // Notification update failed - cancel to prevent ghost notifications
+                        Self::cancel_notification_sync(&error_notification_id);
+                        Err(crate::components::NotificationError::PlatformError {
+                            platform: "macOS".to_string(),
+                            error_code: None,
+                            message: "Notification update failed - Apple API returned error".to_string(),
+                        })
+                    },
+                    Ok(Err(_)) => {
+                        // Channel dropped - callback never fired or panicked
+                        Self::cancel_notification_sync(&error_notification_id);
+                        Err(crate::components::NotificationError::PlatformError {
+                            platform: "macOS".to_string(),
+                            error_code: None,
+                            message: "Completion callback channel dropped - callback never fired or panicked".to_string(),
+                        })
+                    },
+                    Err(_elapsed) => {
+                        // Timeout occurred - cancel the pending notification
+                        tracing::warn!(
+                            notification_id = %error_notification_id,
+                            timeout_ms = timeout_duration.as_millis(),
+                            "Notification update timed out, cancelling pending request"
+                        );
+                        Self::cancel_notification_sync(&error_notification_id);
+                        Err(crate::components::NotificationError::PlatformError {
+                            platform: "macOS".to_string(),
+                            error_code: Some(408), // HTTP 408 Request Timeout semantics
+                            message: format!(
+                                "Notification update timeout after {}ms - request cancelled",
+                                timeout_duration.as_millis()
+                            ),
+                        })
+                    },
                 }
-
-                Ok(())
             }
 
             #[cfg(not(target_os = "macos"))]
@@ -622,7 +678,7 @@ impl PlatformBackend for MacOSBackend {
         Box::pin(async move {
             #[cfg(target_os = "macos")]
             {
-                let center = Self::get_notification_center();
+                let center = UNUserNotificationCenter::currentNotificationCenter();
                 let identifier = NSString::from_str(&id);
 
                 // Convert to NSArray for the API call
@@ -631,8 +687,7 @@ impl PlatformBackend for MacOSBackend {
                 let identifiers_array = NSArray::from_slice(&identifiers_vec);
 
                 center.removePendingNotificationRequestsWithIdentifiers(&identifiers_array);
-                    center.removeDeliveredNotificationsWithIdentifiers(&identifiers_array);
-                
+                center.removeDeliveredNotificationsWithIdentifiers(&identifiers_array);
 
                 Ok(())
             }
