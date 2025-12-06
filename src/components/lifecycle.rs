@@ -327,6 +327,7 @@ impl NotificationState {
         match (self, target) {
             // From Created
             (Created, Validating) => true,
+            (Created, Queued) => true,
             (Created, Cancelled) => true,
 
             // From Validating

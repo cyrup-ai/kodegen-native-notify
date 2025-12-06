@@ -139,14 +139,23 @@ impl NotificationManager {
         notification: Notification,
     ) -> Result<NotificationHandle, NotificationError> {
         let id = notification.identity.id;
+        let correlation_id = notification.identity.correlation_id.clone();
 
-        // Store notification state - DashMap handles locking internally
+        // Transition lifecycle to Queued state so delivery_worker will process it
+        let mut lifecycle = notification.lifecycle;
+        lifecycle.transition_to(
+            crate::components::lifecycle::NotificationState::Queued,
+            crate::components::lifecycle::TransitionReason::QueuedByAttentionManager,
+            Some(correlation_id),
+        )?;
+
+        // Store notification state with Queued lifecycle
         self.state.insert(
             id,
             NotificationState {
                 identity: notification.identity,
                 content: notification.content,
-                lifecycle: notification.lifecycle,
+                lifecycle,  // Now in Queued state, ready for delivery_worker
                 platform_integration: notification.platform_integration,
                 analytics: notification.analytics,
             },
@@ -208,20 +217,41 @@ impl NotificationManager {
         
         for entry in self.state.iter() {
             let notification = entry.value();
-            if !notification.lifecycle.state.is_terminal() {
+            // Only cancel notifications in Delivering state (already sent to platform)
+            // Queued notifications haven't been delivered yet, so nothing to cancel
+            if matches!(
+                notification.lifecycle.state,
+                crate::components::lifecycle::NotificationState::Delivering
+            ) {
                 let notification_id = notification.identity.id.to_string();
-                
+
                 // Cancel on each target platform for this notification
                 for platform in &notification.platform_integration.target_platforms {
                     if let Some(backend) = self.platform_backends.get(platform) {
-                        if let Err(e) = backend.cancel_notification(&notification_id).await {
-                            ::tracing::warn!(
-                                "Failed to cancel notification {} on {:?}: {}",
-                                notification_id, platform, e
-                            );
-                            cancel_errors += 1;
-                        } else {
-                            cancelled_count += 1;
+                        // Wrap cancellation in timeout (2 seconds per notification)
+                        let cancel_result = tokio::time::timeout(
+                            std::time::Duration::from_secs(2),
+                            backend.cancel_notification(&notification_id)
+                        ).await;
+
+                        match cancel_result {
+                            Ok(Ok(())) => {
+                                cancelled_count += 1;
+                            }
+                            Ok(Err(e)) => {
+                                ::tracing::warn!(
+                                    "Failed to cancel notification {} on {:?}: {}",
+                                    notification_id, platform, e
+                                );
+                                cancel_errors += 1;
+                            }
+                            Err(_) => {
+                                ::tracing::warn!(
+                                    "Timeout cancelling notification {} on {:?} (exceeded 2s)",
+                                    notification_id, platform
+                                );
+                                cancel_errors += 1;
+                            }
                         }
                     }
                 }
@@ -445,13 +475,32 @@ async fn delivery_worker(
                 let mut delivery_results: Vec<DeliveryResult> = Vec::new();
 
                 for job in delivery_jobs {
-                    if !job.is_authorized {
-                        delivery_results.push(DeliveryResult::Unauthorized {
-                            notification_id: job.notification_id,
-                            platform: job.platform,
-                            correlation_id: job.correlation_id,
-                        });
-                        continue;
+                    if !job.is_authorized
+                        && let Some(backend) = platform_backends.get(&job.platform)
+                    {
+                        match backend.request_authorization().await {
+                            Ok(true) => {
+                                // Permission granted! Update authorization state
+                                if let Some(mut entry) = state.get_mut(&job.notification_id) {
+                                    entry.platform_integration.update_authorization(
+                                        job.platform,
+                                        AuthorizationState::Authorized {
+                                            granted_at: std::time::SystemTime::now(),
+                                            permissions: vec![PermissionLevel::Display],
+                                        }
+                                    );
+                                }
+                                // Continue with delivery (don't skip!)
+                            }
+                            Ok(false) | Err(_) => {
+                                delivery_results.push(DeliveryResult::Unauthorized {
+                                    notification_id: job.notification_id,
+                                    platform: job.platform,
+                                    correlation_id: job.correlation_id,
+                                });
+                                continue;
+                            }
+                        }
                     }
 
                     if let Some(backend) = platform_backends.get(&job.platform)

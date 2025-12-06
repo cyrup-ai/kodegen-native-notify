@@ -15,6 +15,8 @@ use tokio::sync::OnceCell;
 #[cfg(target_os = "linux")]
 use zbus::{Connection, Result as ZbusResult, dbus_proxy};
 
+use kodegen_native_permissions::{PermissionManager, PermissionStatus, PermissionType};
+
 use crate::components::NotificationResult;
 use crate::components::platform::{
     DeliveryReceipt, NotificationRequest, NotificationUpdate, PlatformBackend, PlatformCapabilities,
@@ -61,6 +63,7 @@ pub struct LinuxBackend {
     connection: Arc<OnceCell<Connection>>,
     #[cfg(target_os = "linux")]
     capabilities: Arc<OnceCell<Vec<String>>>,
+    permission_manager: PermissionManager,
 }
 
 impl Default for LinuxBackend {
@@ -76,6 +79,7 @@ impl LinuxBackend {
             connection: Arc::new(OnceCell::new()),
             #[cfg(target_os = "linux")]
             capabilities: Arc::new(OnceCell::new()),
+            permission_manager: PermissionManager::new(),
         }
     }
 
@@ -92,6 +96,35 @@ impl LinuxBackend {
         }
         #[cfg(not(target_os = "linux"))]
         Ok(false)
+    }
+
+    pub async fn request_authorization(&self) -> NotificationResult<bool> {
+        match self.permission_manager.check_permission(PermissionType::Notification) {
+            Ok(PermissionStatus::Authorized) => Ok(true),
+            Ok(PermissionStatus::NotDetermined) => {
+                match self.permission_manager.request_permission(PermissionType::Notification).await {
+                    Ok(PermissionStatus::Authorized) => Ok(true),
+                    Ok(status) => {
+                        tracing::info!(status = ?status, "Notification permission not granted");
+                        Ok(false)
+                    }
+                    Err(e) => Err(crate::components::NotificationError::PlatformError {
+                        platform: "Linux".to_string(),
+                        error_code: None,
+                        message: format!("Permission request failed: {}", e),
+                    })
+                }
+            }
+            Ok(status) => {
+                tracing::info!(status = ?status, "Notification permission not available");
+                Ok(false)
+            }
+            Err(e) => Err(crate::components::NotificationError::PlatformError {
+                platform: "Linux".to_string(),
+                error_code: None,
+                message: format!("Permission check failed: {}", e),
+            })
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -543,6 +576,15 @@ impl PlatformBackend for LinuxBackend {
             }
         })
     }
+
+    fn request_authorization(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<bool>> + Send + '_>>
+    {
+        Box::pin(async move {
+            self.request_authorization().await
+        })
+    }
 }
 
 // Add Clone implementation for LinuxBackend
@@ -553,6 +595,7 @@ impl Clone for LinuxBackend {
             connection: Arc::clone(&self.connection), // Clone the Arc, share the OnceCell
             #[cfg(target_os = "linux")]
             capabilities: Arc::clone(&self.capabilities), // Clone the Arc, share the OnceCell
+            permission_manager: PermissionManager::new(),
         }
     }
 }

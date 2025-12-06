@@ -1,12 +1,12 @@
 [package]
 name = "kodegen_native_notify"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "KODEGEN.ᴀɪ: Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
 license = "Apache-2.0 OR MIT"
 authors = ["KODEGEN.ᴀɪ"]
 homepage = "https://kodegen.ai"
-repository = "https://github.com/cyrup-ai/kodegen-mcp-tool"
+repository = "https://github.com/cyrup-ai/kodegen-native-notify"
 readme = "README.md"
 categories = ["development-tools", "command-line-utilities", "api-bindings"]
 keywords = [
@@ -17,8 +17,18 @@ keywords = [
     "claude"
 ]
 
+[package.metadata.bundle]
+identifier = "ai.kodegen.kodegen"
+publisher = "KODEGEN.ᴀɪ"
+copyright = "Copyright © 2025"
+short_description = "Memory-efficient, Blazing-Fast, MCP tools for code generation agents."
+
+[package.metadata.bundle.category]
+linux = "Development"
+macos = "public.app-category.developer-tools"
+
 [dependencies]
-kodegen_native_permissions = { version = "0.6" }
+kodegen_native_permissions = { version = "0.7" }
 
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "time", "macros", "fs"] }
 thiserror = "2"
@@ -42,6 +52,7 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-user-notifications = "0.3"
 block2 = "0.6"
+core-foundation = "0.10"  # For LSRegisterURL FFI binding
 
 # Linux specific
 [target.'cfg(target_os = "linux")'.dependencies]

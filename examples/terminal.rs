@@ -6,8 +6,8 @@
 //! Run with: cargo run --example terminal_notification
 
 use kodegen_native_notify::{
-    ImageData, ImagePlacement, MediaAttachment, NotificationBuilder,
-    NotificationManager, Platform, RichText, Url,
+    ImageData, ImagePlacement, MediaAttachment, NotificationBuilder, NotificationManager, Platform,
+    RichText, Url,
 };
 
 /// KODEGEN logo URL for branding in notifications
@@ -30,10 +30,9 @@ async fn main() -> anyhow::Result<()> {
     let completed = true;
     let cwd = "/Volumes/samsung_t9/kodegen-workspace/packages/kodegen";
     let transcript_path = "/Users/davidmaple/.claude/projects/kodegen/transcript_abc123.jsonl";
-    
+
     // Mocked terminal output (last 20 lines of a cargo build)
     let terminal_output = r#"   Compiling kodegen-mcp-schema v0.5.0
-   Compiling kodegen-mcp-tool v0.5.0
    Compiling kodegen-utils v0.5.0
    Compiling kodegen-simd v0.5.0
    Compiling kodegen-config-manager v0.5.0
@@ -66,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
 
     let title = format!("{} terminal {}: {}", icon, terminal_id, cmd_short);
     let transcript_link = format_transcript_link(transcript_path);
-    
+
     let body_html = format!(
         r#"<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Ubuntu, sans-serif;">
             <img src="{}" width="24" height="24" alt="KODEGEN"/>
@@ -113,10 +112,10 @@ async fn main() -> anyhow::Result<()> {
     println!("=== SENDING NOTIFICATION ===");
     let manager = NotificationManager::new();
     let handle = manager.send(notification).await?;
-    
+
     // Wait a moment for delivery
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    
+
     // Check status
     if let Some(status) = handle.status().await {
         println!("Notification ID: {}", status.id);

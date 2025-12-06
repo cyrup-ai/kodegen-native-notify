@@ -117,6 +117,15 @@ impl Default for MacOSBackend {
 
 impl MacOSBackend {
     pub fn new() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            // Ensure bundle ID is set BEFORE any UNUserNotificationCenter calls
+            // This is a synchronous operation using private API (no async/await needed)
+            if let Err(e) = crate::backends::macos_bundle::ensure_bundle_identifier() {
+                tracing::warn!("Failed to ensure bundle identifier: {}", e);
+            }
+        }
+
         Self {
             permission_manager: PermissionManager::new(),
         }
@@ -700,6 +709,15 @@ impl PlatformBackend for MacOSBackend {
                     message: "macOS backend not available on this platform".to_string(),
                 })
             }
+        })
+    }
+
+    fn request_authorization(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<bool>> + Send + '_>>
+    {
+        Box::pin(async move {
+            self.request_authorization().await
         })
     }
 }

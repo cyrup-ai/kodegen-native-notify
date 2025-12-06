@@ -21,6 +21,8 @@ use windows::{
     core::{HSTRING, Result as WindowsResult},
 };
 
+use kodegen_native_permissions::{PermissionManager, PermissionStatus, PermissionType};
+
 use crate::components::NotificationResult;
 use crate::components::platform::{
     DeliveryReceipt, NotificationRequest, NotificationUpdate, PlatformBackend, PlatformCapabilities,
@@ -37,6 +39,7 @@ pub struct WindowsBackend {
     app_id: String,
     #[cfg(target_os = "windows")]
     notifier: Arc<OnceCell<ToastNotifier>>,
+    permission_manager: PermissionManager,
 }
 
 impl Default for WindowsBackend {
@@ -52,6 +55,7 @@ impl WindowsBackend {
             app_id: "EcsNotifications.App".to_string(),
             #[cfg(target_os = "windows")]
             notifier: Arc::new(OnceCell::new()),
+            permission_manager: PermissionManager::new(),
         }
     }
 
@@ -149,6 +153,35 @@ impl WindowsBackend {
         }
         #[cfg(not(target_os = "windows"))]
         Ok(false)
+    }
+
+    pub async fn request_authorization(&self) -> NotificationResult<bool> {
+        match self.permission_manager.check_permission(PermissionType::Notification) {
+            Ok(PermissionStatus::Authorized) => Ok(true),
+            Ok(PermissionStatus::NotDetermined) => {
+                match self.permission_manager.request_permission(PermissionType::Notification).await {
+                    Ok(PermissionStatus::Authorized) => Ok(true),
+                    Ok(status) => {
+                        tracing::info!(status = ?status, "Notification permission not granted");
+                        Ok(false)
+                    }
+                    Err(e) => Err(crate::components::NotificationError::PlatformError {
+                        platform: "Windows".to_string(),
+                        error_code: None,
+                        message: format!("Permission request failed: {}", e),
+                    })
+                }
+            }
+            Ok(status) => {
+                tracing::info!(status = ?status, "Notification permission not available");
+                Ok(false)
+            }
+            Err(e) => Err(crate::components::NotificationError::PlatformError {
+                platform: "Windows".to_string(),
+                error_code: None,
+                message: format!("Permission check failed: {}", e),
+            })
+        }
     }
 }
 
@@ -452,6 +485,15 @@ impl PlatformBackend for WindowsBackend {
             }
         })
     }
+
+    fn request_authorization(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<bool>> + Send + '_>>
+    {
+        Box::pin(async move {
+            self.request_authorization().await
+        })
+    }
 }
 
 // Add Clone implementation for WindowsBackend
@@ -462,6 +504,7 @@ impl Clone for WindowsBackend {
             app_id: self.app_id.clone(),
             #[cfg(target_os = "windows")]
             notifier: Arc::clone(&self.notifier), // Clone the Arc, share the OnceCell
+            permission_manager: PermissionManager::new(),
         }
     }
 }

@@ -942,6 +942,10 @@ pub trait PlatformBackend: Send + Sync {
         &self,
         id: &str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<()>> + Send + '_>>;
+
+    fn request_authorization(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = NotificationResult<bool>> + Send + '_>>;
 }
 
 /// Authorization manager trait

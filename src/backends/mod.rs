@@ -6,6 +6,9 @@ pub mod linux;
 pub mod macos;
 pub mod windows;
 
+#[cfg(target_os = "macos")]
+pub mod macos_bundle;
+
 pub use image_utils::{resolve_image_to_path, resolve_media_images, ResolvedImage, cleanup_temp_image, cleanup_all_cached_images};
 
 use std::collections::HashMap;
